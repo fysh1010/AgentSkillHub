@@ -96,6 +96,8 @@ export interface ExternalSkill {
   size_bytes: number;
   healthy: boolean;
   path: string;
+  /** 点开头目录（.system 等）——工具自带系统技能 */
+  system: boolean;
 }
 
 export interface AgentStatus {

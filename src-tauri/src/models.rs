@@ -163,6 +163,9 @@ pub struct ExternalSkill {
     pub size_bytes: u64,
     pub healthy: bool,
     pub path: String,
+    /// 点开头目录（.system 等）——工具自带的系统技能，仅展示与收编，不做链接部署
+    #[serde(default)]
+    pub system: bool,
 }
 
 /// 单个 Agent 的技能配置

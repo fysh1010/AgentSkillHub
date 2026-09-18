@@ -218,6 +218,7 @@ function openSkills(a: { id: string; name: string }) {
               <div class="ext-info">
                 <div class="ext-line">
                   <b>{{ s.dir_name }}</b>
+                  <span v-if="s.system" class="badge gray" title="工具自带的系统技能（点开头目录），收编后可共享给其他工具">系统</span>
                   <span v-if="!s.healthy" class="badge amber" title="SKILL.md 缺失或格式不合法">无标准元信息</span>
                 </div>
                 <div class="ext-desc">{{ s.description || "（无描述）" }}</div>

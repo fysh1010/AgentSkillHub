@@ -71,24 +71,26 @@ C:\Users\xxx\.zcode\skills\xxx      → E:\my-skills\xxx
 
 ## 安装
 
-### 全平台下载（Releases）
+### 官方下载（Windows，Releases）
 
-| 平台 | 架构 | 下载 | 说明 |
-|---|---|---|---|
-| 🪟 Windows | x64 / x86（32 位） | `AgentSkillHub_*_x64-setup.exe` 等 | NSIS 安装包；另有免安装便携 zip |
-| 🍎 macOS | Apple Silicon (M 系列) | `*-aarch64.dmg` | 未签名，首次打开请**右键 → 打开** |
-| 🍎 macOS | Intel | `*-x64.dmg` | 同上 |
-| 🐧 Linux | x64 | `*_amd64.deb` / `*.AppImage` | deb 适合 Debian/Ubuntu 系 |
+| 产物 | 说明 |
+|---|---|
+| `AgentSkillHub_*_x64-setup.exe` | NSIS 安装包（推荐） |
+| `AgentSkillHub-*-portable.zip` | 免安装便携版，解压即用 |
 
-👉 前往 [Releases](https://github.com/fysh1010/AgentSkillHub/releases) 页面下载对应平台的产物，全部由 CI（GitHub Actions）在官方系统上自动构建。
+👉 前往 [Releases](https://github.com/fysh1010/AgentSkillHub/releases) 下载，由 CI（GitHub Actions）自动构建发布。
 
 > Windows 需 WebView2 运行时（Win11 自带；Win10 若没有，安装器会引导安装）。
+>
+> **macOS / Linux 用户**：本工具的部署机制针对 Windows Junction 设计，暂不提供官方跨平台包；
+> 代码本身基于 Tauri 可跨平台编译，可参照 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) 自行打包体验
+> （部署功能需自行适配 symlink，见路线图）。
 
-### 方式一：安装包（推荐，Windows）
+### 方式一：安装包（推荐）
 
 下载 `AgentSkillHub_0.2.1_x64-setup.exe`，双击安装。
 
-### 方式二：免安装便携版（Windows）
+### 方式二：免安装便携版
 
 下载 `AgentSkillHub-0.2.1-portable.zip`，解压后直接运行 `AgentSkillHub.exe`。
 
@@ -179,7 +181,7 @@ WorkBuddy 目录为真实副本（其加载器不完全遵循 Junction），豆�
 
 ## 路线图
 
-- [x] 多平台 CI 构建（macOS Apple Silicon / Intel、Linux x64、Windows x64 / x86）
+- [x] Windows 官方 CI 构建（安装包 + 便携版，推 tag 自动发布）
 - [ ] macOS / Linux 的 symlink 链接模式适配（当前部署逻辑针对 Windows Junction）
 - [ ] 技能市场收藏与安装历史
 - [ ] 定时自动 Git 备份

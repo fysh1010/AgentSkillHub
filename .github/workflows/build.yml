@@ -1,7 +1,9 @@
-name: Build & Release（多平台）
+name: Build（Windows 安装包 + 便携版）
 
-# 推送 v* 标签时自动构建全平台安装包并挂到对应 Release；
-# 也可在 Actions 页手动触发（workflow_dispatch 构建产物作为 Artifact 下载）。
+# 推送 v* 标签时自动构建 Windows x64 产物并挂到对应 Release；
+# 也可在 Actions 页手动触发（产物作为 Artifact 下载）。
+# 其他平台（macOS / Linux）：本仓库未提供官方构建，可参照 docs/DEVELOPMENT.md 自行打包。
+
 on:
   push:
     tags:
@@ -12,26 +14,8 @@ permissions:
   contents: write
 
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # Windows：x64 + x86（32 位）
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-          - os: windows-latest
-            target: i686-pc-windows-msvc
-          # macOS：Apple Silicon (M 系列) + Intel
-          - os: macos-latest
-            target: aarch64-apple-darwin
-          - os: macos-latest
-            target: x86_64-apple-darwin
-          # Linux：x64
-          - os: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-
-    runs-on: ${{ matrix.os }}
+  build-windows:
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -39,42 +23,53 @@ jobs:
         with:
           node-version: 20
 
-      - name: 安装 Rust 工具链（含交叉目标）
+      - name: 安装 Rust 工具链
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: x86_64-pc-windows-msvc
 
       - name: Rust 编译缓存
         uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
 
-      # Linux 需要.webkit2gtk 等系统库（Tauri 2 用 4.1）
-      - name: 安装 Linux 系统依赖
-        if: matrix.os == 'ubuntu-22.04'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev libayatana-appindicator3-dev
-
-      - name: 构建并上传到 Release
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: 构建 Windows 安装包
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: ${{ github.ref_name }}
-          releaseBody: "AgentSkillHub 全平台构建（见下方 Assets）。macOS 未签名，首次打开请右键 → 打开。"
+          releaseBody: "AgentSkillHub Windows 构建（NSIS 安装包 + 免安装便携版）。需要 WebView2 运行时（Win11 自带）。"
           releaseDraft: false
           prerelease: false
-          args: --target ${{ matrix.target }}
+          args: --target x86_64-pc-windows-msvc
+
+      # 免安装便携版：裸 exe + 使用说明 打包成 zip，追加到同一 Release
+      - name: 组装便携版 zip
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $stage = "$env:RUNNER_TEMP/portable/AgentSkillHub-portable"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item src-tauri/target/x86_64-pc-windows-msvc/release/agentskillhub.exe "$stage/AgentSkillHub.exe"
+          @("AgentSkillHub $env:GITHUB_REF_NAME 便携版（免安装）", "", "1. 直接双击 AgentSkillHub.exe 运行（绿色版，不写注册表）。", "2. 需要 WebView2 运行时：Win11 自带；Win10 如无法启动请安装 WebView2。", "3. 配置数据保存在 %APPDATA%\com.agentskillhub.app\config.json。") | Set-Content "$stage/使用说明.txt" -Encoding UTF8
+          Compress-Archive -Path $stage -DestinationPath "$env:RUNNER_TEMP/AgentSkillHub-$($env:GITHUB_REF_NAME)-portable.zip" -Force
+
+      - name: 上传便携版到 Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ runner.temp }}/AgentSkillHub-*-portable.zip
+          overwrite_files: true
 
       # 手动触发时没有 Release，产物以 Artifact 形式保留
       - name: 上传构建产物（手动触发时）
         if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
-          name: bundles-${{ matrix.os }}-${{ matrix.target }}
+          name: windows-bundles
           path: |
-            src-tauri/target/*/release/bundle/**/*
+            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/**/*
+            src-tauri/target/x86_64-pc-windows-msvc/release/agentskillhub.exe
           if-no-files-found: ignore

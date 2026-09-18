@@ -884,7 +884,9 @@ pub fn ensure_skill_icon(slug: &str, icon_url: &str, skills_root: &str) -> Resul
 
 // ================= 外部技能（实体目录）=================
 
-/// 列出某 Agent skills 目录里的实体技能（非链接的真实目录）
+/// 列出某 Agent skills 目录里的实体技能（非链接的真实目录）。
+/// 点开头条目（.system 等工具自带系统技能）也列出并标记 system=true：
+/// 只读展示与收编（复制），不会对它们做任何链接部署。
 pub fn list_external(skills_dir: &str) -> Vec<ExternalSkill> {
     let mut out = Vec::new();
     let Ok(rd) = std::fs::read_dir(skills_dir) else {
@@ -892,9 +894,6 @@ pub fn list_external(skills_dir: &str) -> Vec<ExternalSkill> {
     };
     for e in rd.flatten() {
         let dir_name = e.file_name().to_string_lossy().to_string();
-        if dir_name.starts_with('.') {
-            continue;
-        }
         let p = e.path();
         // junction / symlink 的不算外部实体
         match std::fs::symlink_metadata(&p) {
@@ -905,6 +904,7 @@ pub fn list_external(skills_dir: &str) -> Vec<ExternalSkill> {
         if !p.is_dir() {
             continue;
         }
+        let system = dir_name.starts_with('.');
         let md_path = p.join("SKILL.md");
         let (name, display, desc, _version, healthy) = if md_path.is_file() {
             scan::read_skill_md_pub(&md_path)
@@ -924,15 +924,16 @@ pub fn list_external(skills_dir: &str) -> Vec<ExternalSkill> {
             size_bytes: scan::dir_size_pub(&p),
             healthy,
             path: p.to_string_lossy().to_string(),
+            system,
         });
     }
     out.sort_by(|a, b| a.dir_name.cmp(&b.dir_name));
     out
 }
 
-/// 收编：把 Agent 里的实体技能复制进技能库
+/// 收编：把 Agent 里的实体技能复制进技能库（含 .system 等系统技能，纯只读复制）
 pub fn adopt(skills_dir: &str, dir_name: &str, skills_root: &str) -> Result<String, String> {
-    if dir_name.starts_with('.') || dir_name.contains("..") || dir_name.contains('/') {
+    if dir_name.contains("..") || dir_name.contains('/') || dir_name.contains('\\') {
         return Err(format!("非法目录名: {dir_name}"));
     }
     let src = Path::new(skills_dir).join(dir_name);
