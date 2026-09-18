@@ -1,6 +1,6 @@
 [package]
 name = "agentskillhub"
-version = "0.2.0"
+version = "0.2.1"
 description = "AI Agent 技能统一管理台"
 authors = ["admin"]
 edition = "2021"

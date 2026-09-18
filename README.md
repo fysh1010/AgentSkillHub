@@ -71,15 +71,26 @@ C:\Users\xxx\.zcode\skills\xxx      → E:\my-skills\xxx
 
 ## 安装
 
-### 方式一：安装包（推荐）
+### 全平台下载（Releases）
 
-从 [Releases](https://github.com/fysh1010/AgentSkillHub/releases) 下载 `AgentSkillHub_0.2.0_x64-setup.exe`，双击安装。
+| 平台 | 架构 | 下载 | 说明 |
+|---|---|---|---|
+| 🪟 Windows | x64 / x86（32 位） | `AgentSkillHub_*_x64-setup.exe` 等 | NSIS 安装包；另有免安装便携 zip |
+| 🍎 macOS | Apple Silicon (M 系列) | `*-aarch64.dmg` | 未签名，首次打开请**右键 → 打开** |
+| 🍎 macOS | Intel | `*-x64.dmg` | 同上 |
+| 🐧 Linux | x64 | `*_amd64.deb` / `*.AppImage` | deb 适合 Debian/Ubuntu 系 |
 
-> 需要 WebView2 运行时（Win11 自带；Win10 若没有，安装器会引导安装）。
+👉 前往 [Releases](https://github.com/fysh1010/AgentSkillHub/releases) 页面下载对应平台的产物，全部由 CI（GitHub Actions）在官方系统上自动构建。
 
-### 方式二：免安装便携版
+> Windows 需 WebView2 运行时（Win11 自带；Win10 若没有，安装器会引导安装）。
 
-下载 `AgentSkillHub-0.2.0-portable.zip`，解压后直接运行 `AgentSkillHub.exe`。
+### 方式一：安装包（推荐，Windows）
+
+下载 `AgentSkillHub_0.2.1_x64-setup.exe`，双击安装。
+
+### 方式二：免安装便携版（Windows）
+
+下载 `AgentSkillHub-0.2.1-portable.zip`，解压后直接运行 `AgentSkillHub.exe`。
 
 ### 方式三：从源码构建
 
@@ -91,7 +102,7 @@ npm run tauri build    # 产物在 src-tauri/target/release/bundle/
 npm run tauri dev      # 开发模式
 ```
 
-依赖：Node.js 18+、Rust 1.77+、WebView2。
+依赖：Node.js 18+、Rust 1.77+、WebView2（Windows）。
 
 ## 快速上手
 
@@ -168,11 +179,20 @@ WorkBuddy 目录为真实副本（其加载器不完全遵循 Junction），豆�
 
 ## 路线图
 
-- [ ] 跨平台支持（macOS / Linux，symlink 模式）
+- [x] 多平台 CI 构建（macOS Apple Silicon / Intel、Linux x64、Windows x64 / x86）
+- [ ] macOS / Linux 的 symlink 链接模式适配（当前部署逻辑针对 Windows Junction）
 - [ ] 技能市场收藏与安装历史
 - [ ] 定时自动 Git 备份
 - [ ] 技能冲突智能合并
 - [ ] 深色主题
+
+## Star 曲线
+
+<div align="center">
+
+[![Star History Chart](https://api.star-history.com/svg?repos=fysh1010/AgentSkillHub&type=Date)](https://star-history.com/#fysh1010/AgentSkillHub&Date)
+
+</div>
 
 ## 许可证
 

@@ -1,0 +1,79 @@
+name: Build & Release（多平台）
+
+# 推送 v* 标签时自动构建全平台安装包并挂到对应 Release；
+# 也可在 Actions 页手动触发（workflow_dispatch 构建产物作为 Artifact 下载）。
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Windows：x64 + x86（32 位）
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: windows-latest
+            target: i686-pc-windows-msvc
+          # macOS：Apple Silicon (M 系列) + Intel
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-latest
+            target: x86_64-apple-darwin
+          # Linux：x64
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 安装 Rust 工具链（含交叉目标）
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust 编译缓存
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # Linux 需要.webkit2gtk 等系统库（Tauri 2 用 4.1）
+      - name: 安装 Linux 系统依赖
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev libayatana-appindicator3-dev
+
+      - name: 构建并上传到 Release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: ${{ github.ref_name }}
+          releaseBody: "AgentSkillHub 全平台构建（见下方 Assets）。macOS 未签名，首次打开请右键 → 打开。"
+          releaseDraft: false
+          prerelease: false
+          args: --target ${{ matrix.target }}
+
+      # 手动触发时没有 Release，产物以 Artifact 形式保留
+      - name: 上传构建产物（手动触发时）
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundles-${{ matrix.os }}-${{ matrix.target }}
+          path: |
+            src-tauri/target/*/release/bundle/**/*
+          if-no-files-found: ignore
