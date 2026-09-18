@@ -1,0 +1,27 @@
+# 依赖与构建产物
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/schemas/
+
+# 日志与临时文件
+*.log
+_tmp/
+_tmp*
+_*.txt
+_*.py
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 本地环境（不要提交任何密钥）
+.env
+.env.*
+
+# 本地工具数据与发布产物（产物上传 GitHub Releases，不进 git）
+.workbuddy/
+release/
+.claude/settings.local.json
