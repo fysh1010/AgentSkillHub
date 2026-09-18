@@ -33,6 +33,9 @@ jobs:
         with:
           workspaces: src-tauri
 
+      - name: 安装前端依赖
+        run: npm ci
+
       - name: 构建 Windows 安装包
         uses: tauri-apps/tauri-action@v0
         env:
