@@ -363,14 +363,14 @@ mod tests {
             audit: Vec::new(),
             market_sources: Vec::new(),
             skill_meta: std::collections::HashMap::new(),
+            token_budget: 8000,
         }
     }
 
     /// 回收站通道本身可用（端到端真实调用一次系统回收站）
     #[test]
     fn recycle_bin_roundtrip() {
-        let tmp = std::env::temp_dir().join("ash_del_recycle");
-        let _ = fs::remove_dir_all(&tmp);
+        let tmp = crate::commands::test_scratch("del_recycle");
         fs::create_dir_all(&tmp).unwrap();
         fs::write(tmp.join("SKILL.md"), "---\nname: probe\n---\n").unwrap();
         move_to_recycle_bin(&tmp).expect("应能移入回收站");
@@ -380,8 +380,7 @@ mod tests {
     /// 拒绝删除技能库根目录
     #[test]
     fn refuse_root_dir() {
-        let tmp = std::env::temp_dir().join("ash_del_root");
-        let _ = fs::remove_dir_all(&tmp);
+        let tmp = crate::commands::test_scratch("del_root");
         fs::create_dir_all(&tmp).unwrap();
         let mut cfg = base_cfg(&tmp, &tmp.join("agent"));
         // 用 ".." 之类穿越标识必须被拒绝
@@ -393,8 +392,7 @@ mod tests {
     /// 缺少 SKILL.md 的目录拒绝删除
     #[test]
     fn refuse_non_skill_dir() {
-        let tmp = std::env::temp_dir().join("ash_del_nonskill");
-        let _ = fs::remove_dir_all(&tmp);
+        let tmp = crate::commands::test_scratch("del_nonskill");
         fs::create_dir_all(tmp.join("notaskill")).unwrap();
         let mut cfg = base_cfg(&tmp, &tmp.join("agent"));
         let err = delete_skill(&mut cfg, "notaskill").unwrap_err();
@@ -406,8 +404,7 @@ mod tests {
     /// 缺失技能应报错
     #[test]
     fn missing_skill_errors() {
-        let tmp = std::env::temp_dir().join("ash_del_missing");
-        let _ = fs::remove_dir_all(&tmp);
+        let tmp = crate::commands::test_scratch("del_missing");
         fs::create_dir_all(&tmp).unwrap();
         let mut cfg = base_cfg(&tmp, &tmp.join("agent"));
         assert!(delete_skill(&mut cfg, "nope").is_err());
@@ -417,8 +414,7 @@ mod tests {
     /// 校验前置逻辑：链接清理 + 配置摘除（不触发回收站，改用 junction 分支）
     #[test]
     fn cleans_links_and_config() {
-        let tmp = std::env::temp_dir().join("ash_del_clean");
-        let _ = fs::remove_dir_all(&tmp);
+        let tmp = crate::commands::test_scratch("del_clean");
         let root = tmp.join("lib");
         let agent_dir = tmp.join("agent");
         fs::create_dir_all(&root).unwrap();

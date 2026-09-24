@@ -1,8 +1,23 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
-import { store, loadAll, toast, ensureTranslate, needsTranslation, transMap, isEnabled, ui } from "../store";
-import { listExternalSkills, adoptSkill } from "../api/tauri";
+import { computed, onMounted, ref } from "vue";
+import { store, loadAll, toast, ensureTranslate, needsTranslation, transMap, isEnabled, ui, secLevels, loadSecuritySummary, tokenStats, refreshTokenStats } from "../store";
+import { listExternalSkills, adoptSkill, doctorScan } from "../api/tauri";
+import { useEsc } from "../composables/useEsc";
 import type { ExternalSkill, SkillInfo } from "../types";
+
+// Esc 关闭弹窗（外部技能弹窗优先于已配置技能弹窗）
+useEsc(() => {
+  if (externalFor.value) externalFor.value = null;
+  else if (skillsFor.value) skillsFor.value = null;
+});
+
+onMounted(() => {
+  loadSecuritySummary().catch(() => {});
+  doctorScan().then((r) => {
+    store.doctorCount = r.length;
+  }).catch(() => {});
+  refreshTokenStats().catch(() => {});
+});
 
 const totalSkills = computed(() => store.skills.length);
 const healthy = computed(() => store.skills.filter((s) => s.healthy).length);
@@ -16,6 +31,11 @@ const unassigned = computed(() =>
 );
 function gotoAgents() {
   ui.page = "agents";
+}
+
+function formatTokens(n: number): string {
+  if (n < 1000) return `${n}`;
+  return `${(n / 1000).toFixed(1)}k`;
 }
 
 // 外部技能弹窗
@@ -144,6 +164,15 @@ function openSkills(a: { id: string; name: string }) {
       <span class="unassigned-go">去分配 →</span>
     </div>
 
+    <!-- 体检问题提醒 -->
+    <div v-if="store.doctorCount && store.doctorCount > 0" class="card unassigned-banner" @click="ui.page = 'doctor'" style="border-color: rgba(245,158,11,.4)">
+      <span class="unassigned-icon">🩺</span>
+      <span class="unassigned-txt">
+        体检发现 <b>{{ store.doctorCount }}</b> 个问题，建议及时处理
+      </span>
+      <span class="unassigned-go">去体检 →</span>
+    </div>
+
     <h2 class="section-title">Agent 状态</h2>
     <div class="agent-grid">
       <div
@@ -187,6 +216,21 @@ function openSkills(a: { id: string; name: string }) {
             <span class="meta-num purple">{{ a.external_count }}</span>
             <span class="meta-label">外部目录 ⌕</span>
           </div>
+        </div>
+        <!-- Token 上下文预算条 -->
+        <div v-if="tokenStats[a.agent.id]" class="token-bar-wrap">
+          <span class="meta-label" style="align-self: center; margin-right: 6px">上下文</span>
+          <div class="token-bar-track">
+            <div
+              class="token-bar-fill"
+              :class="{
+                red: tokenStats[a.agent.id]!.over_budget,
+                amber: !tokenStats[a.agent.id]!.over_budget && tokenStats[a.agent.id]!.resident_tokens * 100 / tokenStats[a.agent.id]!.budget > 80
+              }"
+              :style="{ width: Math.min(100, tokenStats[a.agent.id]!.resident_tokens * 100 / Math.max(1, tokenStats[a.agent.id]!.budget)) + '%' }"
+            ></div>
+          </div>
+          <code class="token-bar-text">{{ formatTokens(tokenStats[a.agent.id]!.resident_tokens) }} / {{ formatTokens(tokenStats[a.agent.id]!.budget) }} tok</code>
         </div>
         <div class="agent-msg">{{ a.message }}</div>
       </div>
@@ -559,21 +603,33 @@ function openSkills(a: { id: string; name: string }) {
   font-size: 13px;
 }
 
-/* 描述翻译按钮 */
-.trans-btn {
-  display: inline-block;
-  margin-left: 6px;
-  padding: 0 7px;
-  border-radius: 9px;
-  border: 1px solid rgba(124, 92, 252, 0.35);
-  background: rgba(124, 92, 252, 0.08);
-  color: #7c5cfc;
-  font-size: 10.5px;
-  font-family: inherit;
-  cursor: pointer;
-  transition: all 0.15s;
+/* Token 上下文预算条 */
+.token-bar-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-soft);
 }
-.trans-btn:hover {
-  background: rgba(124, 92, 252, 0.16);
+.token-bar-track {
+  flex: 1;
+  height: 5px;
+  border-radius: 3px;
+  background: var(--border-soft);
+  overflow: hidden;
+}
+.token-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--green);
+  transition: width 0.3s, background 0.3s;
+}
+.token-bar-fill.amber { background: #d97706; }
+.token-bar-fill.red { background: var(--red); }
+.token-bar-text {
+  font-size: 11px;
+  color: var(--faint);
+  white-space: nowrap;
 }
 </style>

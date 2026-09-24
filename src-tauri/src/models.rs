@@ -251,6 +251,123 @@ pub struct DeleteResult {
     pub message: String,
 }
 
+// ================= 安全扫描 =================
+
+/// 一条内容级安全命中
+#[derive(Debug, Clone, Serialize)]
+pub struct SecurityFinding {
+    /// 相对技能目录的路径（如 scripts/install.sh）
+    pub file: String,
+    /// 行号；文件级命中（如 .pem 文件）为 0
+    pub line: u32,
+    /// exec / network / credential / obfuscation
+    pub category: String,
+    /// high / medium / low
+    pub level: String,
+    /// 命中模式说明（中文）
+    pub pattern: String,
+    /// 命中片段（trim 后截断）
+    pub snippet: String,
+}
+
+/// 单技能安全扫描报告
+#[derive(Debug, Clone, Serialize)]
+pub struct SecurityReport {
+    pub skill_key: String,
+    /// 总体级别：high / medium / low / none
+    pub level: String,
+    pub findings: Vec<SecurityFinding>,
+    pub scanned_files: u32,
+}
+
+/// 技能列表 badge 用的轻量汇总
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct SecuritySummaryItem {
+    pub skill_key: String,
+    pub level: String,
+    pub high: u32,
+    pub medium: u32,
+    pub low: u32,
+}
+
+// ================= Doctor 体检 =================
+
+/// 一条体检问题
+#[derive(Debug, Clone, Serialize)]
+pub struct DoctorIssue {
+    /// 稳定 ID："kind|agent_id|path"（修复时原样回传）
+    pub id: String,
+    /// broken_link / wrong_link / drift / stale_config / orphan_dir / unhealthy_skill
+    pub kind: String,
+    /// 库级问题为 ""
+    pub agent_id: String,
+    pub agent_name: String,
+    pub path: String,
+    pub skill_key: String,
+    /// 中文说明
+    pub detail: String,
+    pub fixable: bool,
+}
+
+/// 体检修复结果
+#[derive(Debug, Clone, Serialize)]
+pub struct DoctorFixResult {
+    pub fixed: u32,
+    pub failed: u32,
+    pub messages: Vec<String>,
+}
+
+// ================= Token 上下文预算 =================
+
+/// 单个技能的 token 估算
+#[derive(Debug, Clone, Serialize)]
+pub struct SkillTokens {
+    pub skill_key: String,
+    pub name: String,
+    /// 常驻开销（frontmatter name+display_name+description）
+    pub resident_tokens: u64,
+    /// SKILL.md 全文开销（加载后参考）
+    pub body_tokens: u64,
+}
+
+/// 单个 Agent 的 token 统计
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentTokenStats {
+    pub agent_id: String,
+    pub agent_name: String,
+    pub enabled_count: usize,
+    pub resident_tokens: u64,
+    pub body_tokens: u64,
+    pub budget: u64,
+    pub over_budget: bool,
+    /// 按 resident 降序，便于定位大户
+    pub skills: Vec<SkillTokens>,
+}
+
+// ================= 环境清单导出/导入 =================
+
+/// 环境清单（分配关系的可迁移快照，不含技能文件与审计日志）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Manifest {
+    pub manifest_version: u32,
+    pub exported_ts: u64,
+    pub app_version: String,
+    pub skills_root: String,
+    pub agents: Vec<AgentDef>,
+    pub agent_configs: HashMap<String, AgentConfig>,
+    #[serde(default)]
+    pub skill_meta: HashMap<String, SkillUserMeta>,
+}
+
+/// 清单导入结果
+#[derive(Debug, Clone, Serialize)]
+pub struct ManifestImportResult {
+    pub ok: bool,
+    pub message: String,
+    /// 导入后指向缺失技能的分配条数（前端显示为"已失效"）
+    pub missing_skills: u32,
+}
+
 /// 全局配置（持久化到 app_config_dir/config.json）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -264,6 +381,13 @@ pub struct AppConfig {
     /// 用户对技能的个性化标注（收藏 / 标签），key 为技能 key
     #[serde(default)]
     pub skill_meta: HashMap<String, SkillUserMeta>,
+    /// 每个 Agent 启用技能的常驻上下文预算（token 数）
+    #[serde(default = "default_token_budget")]
+    pub token_budget: u64,
+}
+
+fn default_token_budget() -> u64 {
+    8000
 }
 
 impl Default for AppConfig {
@@ -275,6 +399,7 @@ impl Default for AppConfig {
             audit: Vec::new(),
             market_sources: Vec::new(),
             skill_meta: HashMap::new(),
+            token_budget: default_token_budget(),
         }
     }
 }

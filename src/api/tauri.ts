@@ -15,6 +15,12 @@ import type {
   MarketSkill,
   ExternalSkill,
   TrashItem,
+  SecurityReport,
+  SecuritySummaryItem,
+  DoctorIssue,
+  DoctorFixResult,
+  AgentTokenStats,
+  ManifestImportResult,
 } from "../types";
 
 export function getSyncData(): Promise<SyncResult> {
@@ -137,6 +143,54 @@ export function listExternalSkills(agentId: string): Promise<ExternalSkill[]> {
 
 export function adoptSkill(agentId: string, dirName: string): Promise<string> {
   return invoke("adopt_skill", { agentId, dirName });
+}
+
+// ===== 安全扫描 =====
+
+export function scanSkillSecurity(key: string): Promise<SecurityReport> {
+  return invoke("scan_skill_security", { key });
+}
+
+export function scanSecuritySummary(): Promise<SecuritySummaryItem[]> {
+  return invoke("scan_security_summary");
+}
+
+// ===== Doctor 体检 =====
+
+export function doctorScan(): Promise<DoctorIssue[]> {
+  return invoke("doctor_scan");
+}
+
+export function doctorFix(ids: string[]): Promise<DoctorFixResult> {
+  return invoke("doctor_fix", { ids });
+}
+
+// ===== Token 上下文预算 =====
+
+export function tokenStats(): Promise<AgentTokenStats[]> {
+  return invoke("token_stats");
+}
+
+export function setTokenBudget(budget: number): Promise<AppConfig> {
+  return invoke("set_token_budget", { budget });
+}
+
+// ===== 环境清单导出/导入 =====
+
+export function exportManifest(): Promise<string> {
+  return invoke("export_manifest");
+}
+
+export function importManifest(path: string): Promise<ManifestImportResult> {
+  return invoke("import_manifest", { path });
+}
+
+export function latestManifest(): Promise<string | null> {
+  return invoke("latest_manifest");
+}
+
+export function revealPath(path: string): Promise<void> {
+  return invoke("reveal_path", { path });
 }
 
 // ===== 翻译 =====

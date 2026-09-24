@@ -10,8 +10,15 @@ import {
   ensureSkillIcon,
   deployAgent,
   formatTs,
+  scanSkillSecurity,
 } from "../api/tauri";
-import type { MarketSource, MarketSkill } from "../types";
+import type { MarketSource, MarketSkill, SecurityReport } from "../types";
+import { useEsc } from "../composables/useEsc";
+
+// Esc 关闭「安装后启用」弹窗（部署进行中不响应，避免误关）
+useEsc(() => {
+  if (showEnable.value && !enabling.value) showEnable.value = false;
+});
 
 const sources = ref<MarketSource[]>([]);
 const activeSource = ref("");
@@ -245,6 +252,10 @@ async function install(s: MarketSkill) {
     pendingSkill.value = s;
     enableAgents.value = [];
     showEnable.value = true;
+    // 安装到本地后可扫描内容安全
+    scanSkillSecurity(s.name).then((r) => {
+      secReport.value = r;
+    }).catch(() => {});
   } catch (e) {
     toast(String(e), "error");
   } finally {
@@ -258,6 +269,7 @@ const showEnable = ref(false);
 const pendingSkill = ref<MarketSkill | null>(null);
 const enableAgents = ref<string[]>([]);
 const enabling = ref(false);
+const secReport = ref<SecurityReport | null>(null);
 
 function toggleEnableAgent(id: string) {
   const i = enableAgents.value.indexOf(id);
@@ -715,6 +727,11 @@ onMounted(loadSources);
         </div>
         <div class="modal-body">
           <p v-if="enableRisk" class="risk-hint">⚠ {{ enableRisk }}</p>
+          <!-- 内容安全扫描摘要 -->
+          <div v-if="secReport && secReport.level !== 'none'" class="risk-hint" style="border-color: rgba(239,68,68,.3)">
+            🛡 内容扫描：<span class="badge" :class="{ red: secReport.level === 'high', amber: secReport.level === 'medium', blue: secReport.level === 'low' }">{{ secReport.level === 'high' ? '高风险' : secReport.level === 'medium' ? '中风险' : '低风险' }}</span>
+            <span v-if="secReport.findings.length > 0" style="margin-left: 6px">{{ secReport.findings.filter(f => f.level === 'high').length }} 高 / {{ secReport.findings.filter(f => f.level === 'medium').length }} 中 / {{ secReport.findings.filter(f => f.level === 'low').length }} 低（扫描 {{ secReport.scanned_files }} 文件）</span>
+          </div>
           <p class="enable-tip">勾选要启用该技能的 Agent，确认后自动配置并部署链接：</p>
           <div class="enable-list">
             <label v-for="a in store.agents" :key="a.agent.id" class="assign-item">
@@ -884,17 +901,7 @@ onMounted(loadSources);
   gap: 4px;
 }
 .enable-list .assign-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
   padding: 9px 12px;
-  border-radius: var(--radius-sm);
-  background: var(--bg-soft);
-  cursor: pointer;
-  font-size: 13px;
-}
-.enable-list .assign-item:hover {
-  background: var(--panel-2);
 }
 .mk {
   display: flex;
@@ -1020,20 +1027,8 @@ onMounted(loadSources);
   overflow: hidden;
   min-height: 0;
 }
-.trans-btn {
-  display: inline-block;
-  padding: 0 7px;
-  border-radius: 9px;
-  border: 1px solid rgba(124, 92, 252, 0.35);
-  background: rgba(124, 92, 252, 0.08);
-  color: #7c5cfc;
-  font-size: 10.5px;
-  font-family: inherit;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-.trans-btn:hover {
-  background: rgba(124, 92, 252, 0.16);
+.mk-desc .trans-btn {
+  margin-left: 0;
 }
 
 .mk-topics {
@@ -1099,40 +1094,5 @@ onMounted(loadSources);
   background: var(--red-soft);
   color: var(--red);
   border: 1px solid rgba(239, 68, 68, 0.28);
-}
-
-/* 分类筛选条 */
-.cats {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 14px;
-}
-.cat {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 5px 12px;
-  border-radius: 20px;
-  border: 1px solid var(--border);
-  background: var(--panel);
-  color: var(--muted);
-  font-size: 12.5px;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-.cat:hover {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-.cat.active {
-  background: var(--grad);
-  border-color: transparent;
-  color: #fff;
-  font-weight: 600;
-}
-.cat-count {
-  opacity: 0.7;
-  font-size: 11px;
 }
 </style>

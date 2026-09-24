@@ -45,7 +45,17 @@ pub fn run() {
             commands::restore_trash,
             commands::purge_trash,
             commands::set_skill_meta,
-            commands::git_backup
+            commands::git_backup,
+            commands::scan_skill_security,
+            commands::scan_security_summary,
+            commands::doctor_scan,
+            commands::doctor_fix,
+            commands::token_stats,
+            commands::set_token_budget,
+            commands::export_manifest,
+            commands::import_manifest,
+            commands::latest_manifest,
+            commands::reveal_path
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

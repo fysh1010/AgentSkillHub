@@ -131,45 +131,49 @@ pub fn extract_description(content: &str) -> String {
     String::new()
 }
 
-/// 目录大小缓存：path → (目录自身 mtime 秒, 大小)。
+/// 目录大小缓存：path → (目录内容指纹, 大小)。
 /// 每次勾选/部署后前端都会全量重扫，60+ 技能递归算大小是主要瓶颈；
-/// 目录 mtime 未变就命中缓存，重扫基本零 I/O。
-/// 注意：目录 mtime 只反映直接子项变化，深层文件变化可能延迟更新——
-/// 仅用于展示用途，可接受。
-fn size_cache() -> &'static std::sync::Mutex<std::collections::HashMap<PathBuf, (u64, u64)>> {
-    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, (u64, u64)>>> =
+/// 指纹未变就命中缓存，重扫基本零 I/O。
+fn size_cache() -> &'static crate::commands::cache::MtimeCache<u64> {
+    static CACHE: std::sync::OnceLock<crate::commands::cache::MtimeCache<u64>> =
         std::sync::OnceLock::new();
     CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
-fn dir_mtime_secs(path: &Path) -> u64 {
-    fs::symlink_metadata(path)
+fn mtime_ms(md: &std::fs::Metadata) -> u64 {
+    md.modified()
         .ok()
-        .and_then(|m| m.modified().ok())
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs())
+        .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// 目录内容指纹：自身 + 两层内每个条目的修改时间（毫秒）之和，外加条目计数（顺序无关）。
+/// 只用目录自身 mtime 是不够的——就地改写已存在的文件（改 SKILL.md、改 scripts/x.py）
+/// 不碰父目录 mtime，缓存会永久陈旧；同一秒内的连续改动也要求毫秒精度。
+/// 仍不覆盖「三层以上就地改文件」，这是遍历开销与失效精度的折中。
+pub(crate) fn dir_fingerprint(path: &Path) -> u64 {
+    fn walk(dir: &Path, depth: u32, acc: &mut u64) {
+        let Ok(rd) = fs::read_dir(dir) else { return };
+        for e in rd.flatten() {
+            let Ok(md) = fs::symlink_metadata(e.path()) else { continue };
+            // 每个条目 +1：让「增删条目」也能改变指纹
+            *acc = acc.wrapping_add(mtime_ms(&md)).wrapping_add(1);
+            let name = e.file_name().to_string_lossy().to_string();
+            if md.is_dir() && depth < 2 && !name.starts_with('.') && name != "node_modules" {
+                walk(&e.path(), depth + 1, acc);
+            }
+        }
+    }
+    let mut acc = fs::symlink_metadata(path).ok().as_ref().map(mtime_ms).unwrap_or(0);
+    walk(path, 0, &mut acc);
+    acc
 }
 
 /// 带缓存的目录大小（顶层入口）
 fn dir_size_cached(path: &Path) -> u64 {
-    let mtime = dir_mtime_secs(path);
-    if let Ok(cache) = size_cache().lock() {
-        if let Some(&(mt, size)) = cache.get(path) {
-            if mt == mtime {
-                return size;
-            }
-        }
-    }
-    let size = dir_size(path, 0);
-    if let Ok(mut cache) = size_cache().lock() {
-        // 防止长期运行后无限增长
-        if cache.len() > 500 {
-            cache.clear();
-        }
-        cache.insert(path.to_path_buf(), (mtime, size));
-    }
-    size
+    let p = path.to_path_buf();
+    crate::commands::cache::cached(size_cache(), p, dir_fingerprint(path), || dir_size(path, 0))
 }
 
 /// 计算目录大小（不跟随符号链接，深度限制防循环）
@@ -491,22 +495,91 @@ mod tests {
         assert_eq!(d2, "line one line two");
     }
 
+    /// 造一个混合结构的技能库：扁平技能 + 旧的「分类/技能」两层结构 + 各类应被忽略的目录。
+    /// 每个用例传自己的 tag，避免并发跑测试时共用同一目录互相改写。
+    fn fixture_root(tag: &str) -> PathBuf {
+        let root = crate::commands::test_scratch(&format!("scan_lib_{tag}"));
+        let write = |dir: &str, body: &str| {
+            let d = root.join(dir);
+            fs::create_dir_all(&d).unwrap();
+            fs::write(d.join("SKILL.md"), body).unwrap();
+        };
+        write("gh-cli", "---\nname: gh-cli\ndescription: GitHub 命令\n---\n# 正文");
+        write(
+            "开发/code",
+            "---\nname: code\ndisplay_name: 编码\ndescription: >\n  折叠\n  多行\n---\nx",
+        );
+        fs::create_dir_all(root.join("_archive/trash")).unwrap();
+        fs::write(root.join("_archive/trash/SKILL.md"), "---\nname: a\n---\n").unwrap();
+        fs::create_dir_all(root.join(".system")).unwrap();
+        fs::write(root.join(".system/SKILL.md"), "---\nname: s\n---\n").unwrap();
+        fs::create_dir_all(root.join("no-md")).unwrap();
+        root
+    }
+
     #[test]
-    fn scan_real_library() {
-        let skills = scan_skills(r"E:\my-skills");
-        assert!(skills.len() > 50, "技能数应 > 50，实际 {}", skills.len());
-        // 扁平结构：key 直接是技能名
-        assert!(skills.iter().any(|s| s.key == "gh-cli"), "应包含扁平 key 'gh-cli'");
-        assert!(skills.iter().all(|s| !s.key.starts_with('_') && !s.key.starts_with('.')), "不应包含隐藏/归档目录");
-        assert!(skills.iter().any(|s| s.healthy), "应存在健康技能");
+    fn scan_flat_and_nested_layout() {
+        let skills = scan_skills(&fixture_root("scan").to_string_lossy());
+        let keys: Vec<&str> = skills.iter().map(|s| s.key.as_str()).collect();
+        assert!(keys.contains(&"gh-cli"), "扁平结构应以目录名为 key");
+        assert!(keys.contains(&"开发/code"), "两层结构应以 分类/名 为 key");
+        assert!(
+            !keys.contains(&"no-md"),
+            "既无 SKILL.md 又无技能子目录的不算技能: {keys:?}"
+        );
+        // 归档目录与隐藏目录一律不参与扫描
+        assert!(
+            skills.iter().all(|s| !s.key.contains("_archive") && !s.key.contains(".system")),
+            "不应包含归档/隐藏目录: {keys:?}"
+        );
+        let cli = skills.iter().find(|s| s.key == "gh-cli").unwrap();
+        assert!(cli.healthy);
+        assert_eq!(cli.category, "(根)");
+        assert_eq!(cli.description, "GitHub 命令");
+        let nested = skills.iter().find(|s| s.key == "开发/code").unwrap();
+        assert_eq!(nested.category, "开发");
+        assert_eq!(nested.name, "编码", "display_name 优先作为展示名");
+        assert_eq!(nested.description, "折叠 多行", "块标量应折叠拼接");
+    }
+
+    #[test]
+    fn scan_missing_root_returns_empty() {
+        assert!(scan_skills(r"Z:\绝对不存在的路径\skills").is_empty());
     }
 
     #[test]
     fn resolve_flat_and_nested() {
-        // 扁平 key
-        assert!(resolve_skill_target(r"E:\my-skills", "gh-cli").is_some(), "扁平 key 应可解析");
-        // 两层 key 兼容
-        assert!(resolve_skill_target(r"E:\my-skills", "不存在分类/x").is_none());
+        let root = fixture_root("resolve").to_string_lossy().to_string();
+        assert!(resolve_skill_target(&root, "gh-cli").is_some(), "扁平 key 应可解析");
+        assert!(resolve_skill_target(&root, "开发/code").is_some(), "两层 key 兼容");
+        assert!(resolve_skill_target(&root, "不存在分类/x").is_none());
+    }
+
+    #[test]
+    fn fingerprint_detects_in_place_edit() {
+        // 回归：就地改写已存在的文件不会更新父目录 mtime，旧实现据此起不了缓存
+        let root = fixture_root("fingerprint");
+        let dir = root.join("gh-cli");
+        let before = dir_fingerprint(&dir);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fs::write(dir.join("SKILL.md"), "---\nname: gh-cli\ndescription: 改了\n---\nx").unwrap();
+        let edited = dir_fingerprint(&dir);
+        assert_ne!(edited, before, "文件被就地改写后指纹必须变化");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fs::write(dir.join("extra.txt"), b"x").unwrap();
+        assert_ne!(dir_fingerprint(&dir), edited, "新增文件后指纹必须变化");
+    }
+
+    #[test]
+    fn dir_size_cache_grows_with_content() {
+        let dir = fixture_root("dirsize").join("gh-cli");
+        assert!(dir_size_pub(&dir) > 0);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fs::write(dir.join("blob.bin"), vec![b'7'; 4096]).unwrap();
+        assert!(
+            dir_size_pub(&dir) >= 4096,
+            "缓存必须感知到新写入的文件，否则大小长期不更新"
+        );
     }
 
     #[test]
@@ -522,8 +595,7 @@ mod tests {
 
     #[test]
     fn icon_detection_prefers_and_skips_oversize() {
-        let tmp = std::env::temp_dir().join("ash_scan_icon");
-        let _ = fs::remove_dir_all(&tmp);
+        let tmp = crate::commands::test_scratch("scan_icon");
         fs::create_dir_all(tmp.join("assets")).unwrap();
         fs::write(tmp.join("_icon.svg"), b"<svg/>").unwrap();
         fs::write(tmp.join("assets/logo.png"), b"\x89PNG").unwrap();
@@ -531,8 +603,7 @@ mod tests {
         let got = find_icon_b64(&tmp);
         assert!(got.starts_with("data:image/svg+xml;base64,"), "got: {got}");
         // 没有任何图标时返回空
-        let empty = std::env::temp_dir().join("ash_scan_icon_empty");
-        let _ = fs::remove_dir_all(&empty);
+        let empty = crate::commands::test_scratch("scan_icon_empty");
         fs::create_dir_all(&empty).unwrap();
         fs::write(empty.join("readme.txt"), b"x").unwrap();
         assert_eq!(find_icon_b64(&empty), "");

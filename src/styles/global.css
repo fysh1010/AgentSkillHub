@@ -290,7 +290,10 @@ textarea.input {
   gap: 8px;
 }
 .toast {
-  padding: 10px 16px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 10px 12px 10px 14px;
   border-radius: var(--radius-sm);
   background: var(--panel);
   border: 1px solid var(--border);
@@ -300,9 +303,43 @@ textarea.input {
   max-width: 380px;
   animation: slideIn 0.2s ease;
 }
+.toast-icon {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  flex-shrink: 0;
+}
+.toast-text {
+  flex: 1;
+  min-width: 0;
+}
+.toast-close {
+  border: none;
+  background: transparent;
+  color: var(--faint);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 5px;
+  flex-shrink: 0;
+  transition: all 0.15s;
+}
+.toast-close:hover {
+  color: var(--text);
+  background: var(--panel-2);
+}
 .toast.success { border-color: rgba(18, 183, 106, 0.5); }
+.toast.success .toast-icon { background: var(--green); }
 .toast.error { border-color: rgba(239, 68, 68, 0.5); }
+.toast.error .toast-icon { background: var(--red); }
 .toast.info { border-color: rgba(78, 110, 242, 0.5); }
+.toast.info .toast-icon { background: var(--accent); }
 
 @keyframes slideIn {
   from { opacity: 0; transform: translateX(24px); }
@@ -337,4 +374,74 @@ textarea.input {
   color: var(--muted);
   font-size: 13px;
   margin-top: 3px;
+}
+
+/* ---------- 跨页面共享组件（原各视图内重复定义，统一提取） ---------- */
+
+/* 分类筛选胶囊条（技能库 / 技能市场） */
+.cats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.cat {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 12px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.cat:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.cat.active {
+  background: var(--grad);
+  border-color: transparent;
+  color: #fff;
+  font-weight: 600;
+}
+.cat-count {
+  opacity: 0.7;
+  font-size: 11px;
+}
+
+/* 描述翻译小按钮（各技能卡片 / 列表通用） */
+.trans-btn {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 7px;
+  border-radius: 9px;
+  border: 1px solid rgba(124, 92, 252, 0.35);
+  background: rgba(124, 92, 252, 0.08);
+  color: #7c5cfc;
+  font-size: 10.5px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.trans-btn:hover {
+  background: rgba(124, 92, 252, 0.16);
+}
+
+/* Agent 分配开关行（技能详情 / 安装后启用弹窗） */
+.assign-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-soft);
+  cursor: pointer;
+  font-size: 13px;
+}
+.assign-item:hover {
+  background: var(--panel-2);
 }

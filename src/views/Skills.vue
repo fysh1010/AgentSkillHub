@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { marked } from "marked";
 import {
   store,
@@ -13,6 +13,8 @@ import {
   transMap,
   skillMeta,
   updateSkillMeta,
+  secLevels,
+  loadSecuritySummary,
 } from "../store";
 import {
   formatBytes,
@@ -21,8 +23,17 @@ import {
   listTrash,
   restoreTrash,
   purgeTrash,
+  scanSkillSecurity,
 } from "../api/tauri";
-import type { SkillInfo, SkillDetail, TrashItem } from "../types";
+import type { SkillInfo, SkillDetail, TrashItem, SecurityReport } from "../types";
+import { useEsc } from "../composables/useEsc";
+
+// Esc 按弹窗层级关闭：全文预览 > 删除确认 > 技能详情
+useEsc(() => {
+  if (detail.value) detail.value = null;
+  else if (confirming.value && !deleting.value) confirming.value = null;
+  else if (selected.value) selected.value = null;
+});
 
 const keyword = ref("");
 const activeCat = ref("全部");
@@ -187,13 +198,18 @@ function removeTag(t: string) {
 
 const detail = ref<SkillDetail | null>(null);
 const detailLoading = ref(false);
+const secReport = ref<SecurityReport | null>(null);
 
 async function openFull() {
   if (!selected.value || detailLoading.value) return;
   detailLoading.value = true;
   detail.value = null;
+  secReport.value = null;
   try {
-    detail.value = await readSkillDetail(selected.value.key);
+    const key = selected.value.key;
+    const [d, s] = await Promise.all([readSkillDetail(key), scanSkillSecurity(key)]);
+    detail.value = d;
+    secReport.value = s;
   } catch (e) {
     toast(String(e), "error");
   } finally {
@@ -256,6 +272,10 @@ async function doPurge(item: TrashItem) {
     trashBusy.value = "";
   }
 }
+
+onMounted(() => {
+  loadSecuritySummary().catch(() => {});
+});
 </script>
 
 <template>
@@ -329,6 +349,17 @@ async function doPurge(item: TrashItem) {
           <span class="badge gray">{{ s.category }}</span>
           <span class="meta-text">{{ formatBytes(s.size_bytes) }}</span>
           <span class="meta-text" v-if="s.has_scripts">scripts/</span>
+          <span
+            v-if="secLevels[s.key] && secLevels[s.key] !== 'none'"
+            class="badge"
+            :class="{
+              red: secLevels[s.key] === 'high',
+              amber: secLevels[s.key] === 'medium',
+              blue: secLevels[s.key] === 'low'
+            }"
+          >
+            风险·{{ secLevels[s.key] === 'high' ? '高' : secLevels[s.key] === 'medium' ? '中' : '低' }}
+          </span>
           <button
             class="skill-del"
             title="删除技能（移入回收站）"
@@ -474,6 +505,21 @@ async function doPurge(item: TrashItem) {
               <li v-for="r in detail.risks" :key="r">{{ r }}</li>
             </ul>
           </div>
+          <!-- 内容级安全扫描 -->
+          <div v-if="secReport && secReport.level !== 'none'" class="risk-box">
+            <b>🛡 内容安全扫描（{{ secReport.findings.length }} 条命中）</b>
+            <div style="margin-top: 6px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap">
+              <span class="badge" :class="{ red: secReport.level === 'high', amber: secReport.level === 'medium', blue: secReport.level === 'low' }">
+                {{ secReport.level === 'high' ? '高风险' : secReport.level === 'medium' ? '中风险' : '低风险' }}
+              </span>
+              <span style="font-size: 12px; color: var(--muted)">扫描 {{ secReport.scanned_files }} 个文件</span>
+            </div>
+            <div v-for="f in secReport.findings.slice(0, 30)" :key="f.file + f.line" class="finding-row">
+              <code>{{ f.file }}{{ f.line > 0 ? ':' + f.line : '' }}</code>
+              <span class="badge" :class="{ red: f.level === 'high', amber: f.level === 'medium', blue: f.level === 'low' }" style="margin-left: 6px; font-size: 10px">{{ f.category }}</span>
+              <span style="margin-left: 6px; color: var(--muted)">{{ f.pattern }}</span>
+            </div>
+          </div>
           <div class="md-view" v-html="mdHtml"></div>
           <h3 class="files-title">文件清单（{{ detail.files.length }}）</h3>
           <div class="files-list">
@@ -536,38 +582,13 @@ h1 {
   margin-top: 2px;
 }
 .search {
-  width: 260px;
+  width: 280px;
+  flex-shrink: 1;
+  min-width: 140px;
 }
 
 .cats {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
   margin-bottom: 16px;
-}
-.cat {
-  padding: 5px 12px;
-  border-radius: 20px;
-  border: 1px solid var(--border);
-  background: var(--panel);
-  color: var(--muted);
-  font-size: 12.5px;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-.cat:hover {
-  border-color: var(--accent);
-  color: var(--text);
-}
-.cat.active {
-  background: linear-gradient(135deg, var(--accent), var(--accent-2));
-  border-color: transparent;
-  color: #fff;
-  font-weight: 600;
-}
-.cat-count {
-  opacity: 0.7;
-  font-size: 11px;
 }
 
 .grid {
@@ -673,7 +694,7 @@ h1 {
   background: transparent;
   color: var(--red);
   cursor: pointer;
-  opacity: 0;
+  opacity: 0.35;
   transition: all 0.15s;
 }
 .skill:hover .skill-del,
@@ -746,19 +767,6 @@ h1 {
   display: flex;
   flex-direction: column;
   gap: 4px;
-}
-.assign-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 12px;
-  border-radius: var(--radius-sm);
-  background: var(--bg-soft);
-  cursor: pointer;
-  font-size: 13px;
-}
-.assign-item:hover {
-  background: var(--panel-2);
 }
 
 /* 收藏星标 */
@@ -978,21 +986,24 @@ h1 {
   gap: 8px;
 }
 
-/* 描述翻译按钮 */
-.trans-btn {
-  display: inline-block;
-  margin-left: 6px;
-  padding: 0 7px;
-  border-radius: 9px;
-  border: 1px solid rgba(124, 92, 252, 0.35);
-  background: rgba(124, 92, 252, 0.08);
-  color: #7c5cfc;
-  font-size: 10.5px;
-  font-family: inherit;
-  cursor: pointer;
-  transition: all 0.15s;
+/* 全文预览安全扫描命中行 */
+.finding-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  padding: 3px 0;
+  border-bottom: 1px solid var(--border-soft);
 }
-.trans-btn:hover {
-  background: rgba(124, 92, 252, 0.16);
+.finding-row code {
+  font-size: 11px;
+  color: var(--faint);
+  background: var(--bg-soft);
+  padding: 0 5px;
+  border-radius: 4px;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>

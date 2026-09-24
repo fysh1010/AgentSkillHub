@@ -960,8 +960,7 @@ mod tests {
 
     #[test]
     fn adopt_copies_and_rejects_conflict() {
-        let tmp = std::env::temp_dir().join("ash_mkt_test");
-        let _ = std::fs::remove_dir_all(&tmp);
+        let tmp = crate::commands::test_scratch("mkt_test");
         let lib = tmp.join("lib");
         let agent = tmp.join("agent");
         std::fs::create_dir_all(lib.join("existing")).unwrap();
@@ -985,8 +984,7 @@ mod tests {
 
     #[test]
     fn list_external_skips_links() {
-        let tmp = std::env::temp_dir().join("ash_mkt_ext");
-        let _ = std::fs::remove_dir_all(&tmp);
+        let tmp = crate::commands::test_scratch("mkt_ext");
         let lib = tmp.join("lib");
         let agent = tmp.join("agent");
         std::fs::create_dir_all(lib.join("real-skill")).unwrap();
@@ -1016,8 +1014,7 @@ mod e2e_tests {
     #[ignore]
     #[test]
     fn clawhub_real_install() {
-        let tmp = std::env::temp_dir().join("ash_mkt_e2e");
-        let _ = std::fs::remove_dir_all(&tmp);
+        let tmp = crate::commands::test_scratch("mkt_e2e");
         std::fs::create_dir_all(&tmp).unwrap();
         let r = clawhub_install("screenshot", "ivangdavila", tmp.to_str().unwrap(), "");
         assert!(r.is_ok(), "安装失败: {:?}", r.err());

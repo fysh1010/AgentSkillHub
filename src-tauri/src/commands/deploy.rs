@@ -47,15 +47,15 @@ pub fn remove_junction(link: &Path) -> Result<(), String> {
 }
 
 /// Agent skills 目录的实际扫描结果
-struct AgentLinks {
+pub(crate) struct AgentLinks {
     /// skills_dir 本身是否是整目录 junction（旧模式）
-    parent_link: Option<PathBuf>,
+    pub(crate) parent_link: Option<PathBuf>,
     /// 第一层子目录列表：(名字, 类型 link/external, 目标)
-    entries: Vec<(String, String, Option<PathBuf>)>,
+    pub(crate) entries: Vec<(String, String, Option<PathBuf>)>,
 }
 
 /// 扫描 agent skills 目录的实际状态
-fn scan_agent_links(skills_dir: &Path) -> AgentLinks {
+pub(crate) fn scan_agent_links(skills_dir: &Path) -> AgentLinks {
     let mut parent_link = None;
     if is_junction(skills_dir) {
         parent_link = junction_target(skills_dir);
@@ -579,7 +579,7 @@ pub fn import_existing(agent: &AgentDef, cfg: &AppConfig) -> Vec<String> {
 }
 
 /// 在技能库扫描结果中按路径精确匹配技能 key
-fn find_key_by_path(skills: &[SkillInfo], p: &Path) -> Option<String> {
+pub(crate) fn find_key_by_path(skills: &[SkillInfo], p: &Path) -> Option<String> {
     let norm = normalize(p);
     skills
         .iter()
@@ -605,8 +605,7 @@ mod tests {
 
     #[test]
     fn junction_create_and_remove() {
-        let tmp = std::env::temp_dir().join("ash_test_junction");
-        let _ = std::fs::remove_dir_all(&tmp);
+        let tmp = crate::commands::test_scratch("test_junction");
         std::fs::create_dir_all(tmp.join("target")).unwrap();
         let link = tmp.join("link");
         create_junction(&link, &tmp.join("target")).unwrap();
@@ -620,8 +619,7 @@ mod tests {
 
     #[test]
     fn diff_parent_link_expansion() {
-        let tmp = std::env::temp_dir().join("ash_test_diff");
-        let _ = std::fs::remove_dir_all(&tmp);
+        let tmp = crate::commands::test_scratch("test_diff");
         let root = tmp.join("lib");
         std::fs::create_dir_all(&root).unwrap();
         write_skill(&root, "common", "alpha");
@@ -643,6 +641,7 @@ mod tests {
             audit: Vec::new(),
             market_sources: Vec::new(),
             skill_meta: std::collections::HashMap::new(),
+            token_budget: 8000,
         };
         let agent = AgentDef {
             id: "test".into(),
@@ -674,8 +673,7 @@ mod tests {
 
     #[test]
     fn rollback_undoes_creation() {
-        let tmp = std::env::temp_dir().join("ash_test_rb");
-        let _ = std::fs::remove_dir_all(&tmp);
+        let tmp = crate::commands::test_scratch("test_rb");
         let root = tmp.join("lib");
         std::fs::create_dir_all(&root).unwrap();
         write_skill(&root, "开发", "code");
@@ -700,6 +698,7 @@ mod tests {
             audit: Vec::new(),
             market_sources: Vec::new(),
             skill_meta: std::collections::HashMap::new(),
+            token_budget: 8000,
         };
         let result = deploy(&agent, &cfg, false);
         assert!(result.ok);
@@ -729,8 +728,7 @@ mod tests {
 
     #[test]
     fn rollback_restores_removed() {
-        let tmp = std::env::temp_dir().join("ash_test_rb2");
-        let _ = std::fs::remove_dir_all(&tmp);
+        let tmp = crate::commands::test_scratch("test_rb2");
         let root = tmp.join("lib");
         std::fs::create_dir_all(&root).unwrap();
         write_skill(&root, "开发", "code");
@@ -759,6 +757,7 @@ mod tests {
                     message: "test".into(),
                 }],
             }],
+            token_budget: 8000,
         };
         let rb = rollback_last(&cfg, "test");
         assert!(rb.ok, "回滚应成功: {}", rb.summary);
@@ -768,8 +767,7 @@ mod tests {
 
     #[test]
     fn import_existing_from_parent_link() {
-        let tmp = std::env::temp_dir().join("ash_test_import");
-        let _ = std::fs::remove_dir_all(&tmp);
+        let tmp = crate::commands::test_scratch("test_import");
         let root = tmp.join("lib");
         std::fs::create_dir_all(&root).unwrap();
         write_skill(&root, "common", "alpha");
@@ -786,6 +784,7 @@ mod tests {
             audit: Vec::new(),
             market_sources: Vec::new(),
             skill_meta: std::collections::HashMap::new(),
+            token_budget: 8000,
         };
         let agent = AgentDef {
             id: "test".into(),
@@ -802,8 +801,7 @@ mod tests {
 
     #[test]
     fn import_existing_from_individual_links() {
-        let tmp = std::env::temp_dir().join("ash_test_import2");
-        let _ = std::fs::remove_dir_all(&tmp);
+        let tmp = crate::commands::test_scratch("test_import2");
         let root = tmp.join("lib");
         std::fs::create_dir_all(&root).unwrap();
         write_skill(&root, "开发", "code");
@@ -819,6 +817,7 @@ mod tests {
             audit: Vec::new(),
             market_sources: Vec::new(),
             skill_meta: std::collections::HashMap::new(),
+            token_budget: 8000,
         };
         let agent = AgentDef {
             id: "test".into(),

@@ -1,6 +1,13 @@
 import { reactive } from "vue";
 import * as api from "./api/tauri";
-import type { AppConfig, SkillInfo, AgentStatus, DeployResult, DeleteResult } from "./types";
+import type {
+  AppConfig,
+  SkillInfo,
+  AgentStatus,
+  DeployResult,
+  DeleteResult,
+  AgentTokenStats,
+} from "./types";
 
 // ---------- 英文描述翻译（全局缓存，后端另有一份磁盘缓存） ----------
 
@@ -31,11 +38,6 @@ export function ensureTranslate(text: string): string {
     inFlight.set(text, p);
   }
   return text; // 译好前先显示原文
-}
-
-/** 手动触发一条翻译（用于「译」按钮） */
-export async function translateNow(text: string): Promise<void> {
-  await ensureTranslate(text);
 }
 
 // ---- 批量翻译：限流队列，避免瞬时并发打爆免费翻译接口 ----
@@ -77,13 +79,41 @@ export const store = reactive({
   config: null as AppConfig | null,
   loading: false,
   toasts: [] as ToastItem[],
+  /** 体检问题数（null = 尚未扫描过） */
+  doctorCount: null as number | null,
 });
 
 /** 全局 UI 状态（跨页面跳转用） */
 export const ui = reactive({
-  /** 当前页：dashboard / skills / market / agents / audit / settings */
+  /** 当前页：dashboard / skills / market / agents / doctor / audit / settings */
   page: "dashboard",
 });
+
+/** 技能 key → 安全级别（high/medium/low/none），后台扫描汇总填充 */
+export const secLevels = reactive<Record<string, string>>({});
+
+export async function loadSecuritySummary(): Promise<void> {
+  try {
+    const items = await api.scanSecuritySummary();
+    for (const k of Object.keys(secLevels)) delete secLevels[k];
+    for (const it of items) secLevels[it.skill_key] = it.level;
+  } catch (e) {
+    console.warn("安全扫描汇总失败", e);
+  }
+}
+
+/** agentId → token 统计 */
+export const tokenStats = reactive<Record<string, AgentTokenStats>>({});
+
+export async function refreshTokenStats(): Promise<void> {
+  try {
+    const list = await api.tokenStats();
+    for (const k of Object.keys(tokenStats)) delete tokenStats[k];
+    for (const s of list) tokenStats[s.agent_id] = s;
+  } catch (e) {
+    console.warn("token 统计失败", e);
+  }
+}
 
 /** 某技能的用户标注（收藏/标签），无记录时返回默认值 */
 export function skillMeta(key: string): { starred: boolean; tags: string[] } {
@@ -108,10 +138,12 @@ let toastId = 0;
 export function toast(text: string, type: ToastItem["type"] = "info") {
   const id = ++toastId;
   store.toasts.push({ id, type, text });
-  setTimeout(() => {
-    const i = store.toasts.findIndex((t) => t.id === id);
-    if (i >= 0) store.toasts.splice(i, 1);
-  }, 3600);
+  setTimeout(() => removeToast(id), 3600);
+}
+
+export function removeToast(id: number) {
+  const i = store.toasts.findIndex((t) => t.id === id);
+  if (i >= 0) store.toasts.splice(i, 1);
 }
 
 export async function loadAll(): Promise<void> {
@@ -126,10 +158,6 @@ export async function loadAll(): Promise<void> {
   } finally {
     store.loading = false;
   }
-}
-
-export function findAgent(id: string): AgentStatus | undefined {
-  return store.agents.find((a) => a.agent.id === id);
 }
 
 export function agentConfig(id: string) {

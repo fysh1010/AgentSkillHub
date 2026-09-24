@@ -1,7 +1,12 @@
+pub mod cache;
 pub mod delete;
 pub mod deploy;
+pub mod doctor;
+pub mod manifest;
 pub mod market;
 pub mod scan;
+pub mod security;
+pub mod tokens;
 
 use crate::models::*;
 use std::fs;
@@ -14,46 +19,79 @@ pub struct AppState {
     pub handle: AppHandle,
 }
 
+/// 用户主目录（Windows 下 %USERPROFILE%，其他平台回退 $HOME）
+fn env_dir(name: &str) -> Option<PathBuf> {
+    std::env::var_os(name).map(PathBuf::from).filter(|p| p.is_absolute())
+}
+
+fn user_home() -> Option<PathBuf> {
+    env_dir("USERPROFILE").or_else(|| env_dir("HOME"))
+}
+
+/// 在用户主目录下拼路径，如 home\.\claude\skills
+fn in_home(parts: &[&str]) -> Option<String> {
+    let mut p = user_home()?;
+    for part in parts {
+        p = p.join(part);
+    }
+    Some(p.to_string_lossy().to_string())
+}
+
 /// 内置 Agent 默认注册表（路径可在设置中修改）
+/// 全部按当前用户目录推导；拿不到主目录时返回空表，由 detect_agents 兜底发现。
 fn default_agents() -> Vec<AgentDef> {
-    vec![
-        AgentDef {
-            id: "claude".into(),
-            name: "Claude Code".into(),
-            skills_dir: r"C:\Users\admin\.claude\skills".into(),
-            builtin: true,
-        },
-        AgentDef {
-            id: "codex".into(),
-            name: "OpenAI Codex".into(),
-            skills_dir: r"C:\Users\admin\.codex\skills".into(),
-            builtin: true,
-        },
-        AgentDef {
-            id: "zcode".into(),
-            name: "Zcode".into(),
-            skills_dir: r"C:\Users\admin\.zcode\skills".into(),
-            builtin: true,
-        },
-        AgentDef {
-            id: "workbuddy".into(),
-            name: "WorkBuddy".into(),
-            skills_dir: r"C:\Users\admin\.workbuddy\skills".into(),
-            builtin: true,
-        },
-        AgentDef {
-            id: "agents".into(),
-            name: "Agents".into(),
-            skills_dir: r"C:\Users\admin\.agents\skills".into(),
-            builtin: true,
-        },
-        AgentDef {
+    let local = env_dir("LOCALAPPDATA");
+    let doubao = local.as_ref().map(|d| {
+        d.join(r"Doubao\User Data\Default\.doubao\agent_mode\workspace\.user_skills")
+            .to_string_lossy()
+            .to_string()
+    });
+    let specs = [
+        ("claude", "Claude Code", in_home(&[".claude", "skills"])),
+        ("codex", "OpenAI Codex", in_home(&[".codex", "skills"])),
+        ("zcode", "Zcode", in_home(&[".zcode", "skills"])),
+        ("workbuddy", "WorkBuddy", in_home(&[".workbuddy", "skills"])),
+        ("agents", "Agents", in_home(&[".agents", "skills"])),
+    ];
+    let mut out = Vec::new();
+    for (id, name, dir) in specs {
+        if let Some(skills_dir) = dir {
+            out.push(AgentDef {
+                id: id.into(),
+                name: name.into(),
+                skills_dir,
+                builtin: true,
+            });
+        }
+    }
+    if let Some(skills_dir) = doubao {
+        out.push(AgentDef {
             id: "doubao".into(),
             name: "豆包 Doubao".into(),
-            skills_dir: r"C:\Users\admin\AppData\Local\Doubao\User Data\Default\.doubao\agent_mode\workspace\.user_skills".into(),
+            skills_dir,
             builtin: true,
-        },
-    ]
+        });
+    }
+    out
+}
+
+/// v0.2.1 及更早版本的内置 Agent 路径写死了作者机器的 C:\Users\admin，
+/// 老配置里存的仍是那些路径。这里只纠正前缀（子路径原样保留），
+/// 用户改过的深层路径与自建 Agent 不受影响。
+const LEGACY_HOME: &str = r"C:\Users\admin";
+
+fn migrate_legacy_agent_paths(agents: &mut [AgentDef]) {
+    let Some(home) = user_home() else { return };
+    let home = home.to_string_lossy().to_string();
+    for a in agents.iter_mut() {
+        if !a.builtin {
+            continue;
+        }
+        let Some(rest) = a.skills_dir.strip_prefix(LEGACY_HOME) else {
+            continue;
+        };
+        a.skills_dir = format!("{}{}", home, rest.replace('/', "\\"));
+    }
 }
 
 fn now_ts() -> u64 {
@@ -97,6 +135,8 @@ pub fn load_config(app: &AppHandle) -> AppConfig {
     }
     if cfg.agents.is_empty() {
         cfg.agents = default_agents();
+    } else {
+        migrate_legacy_agent_paths(&mut cfg.agents);
     }
     if cfg.market_sources.is_empty() {
         cfg.market_sources = market::default_market_sources();
@@ -139,6 +179,15 @@ fn save_config(state: &AppState) -> Result<(), String> {
 
 fn find_agent<'a>(cfg: &'a AppConfig, id: &str) -> Option<&'a AgentDef> {
     cfg.agents.iter().find(|a| a.id == id)
+}
+
+/// 追加一条审计记录（200 条封顶）
+fn push_audit(cfg: &mut AppConfig, entry: AuditEntry) {
+    cfg.audit.push(entry);
+    let overflow = cfg.audit.len().saturating_sub(200);
+    if overflow > 0 {
+        cfg.audit.drain(0..overflow);
+    }
 }
 
 /// 常见 Agent 的友好显示名；未收录的做首字母大写兜底
@@ -861,4 +910,214 @@ pub fn adopt_skill(
         return Err(format!("Agent 不存在: {agent_id}"));
     };
     market::adopt(&agent.skills_dir, &dir_name, &cfg.skills_root)
+}
+
+// ================= 安全扫描 =================
+
+/// 单技能内容级安全扫描（async：要读技能目录内多个文本文件）
+#[tauri::command]
+pub async fn scan_skill_security(
+    state: State<'_, AppState>,
+    key: String,
+) -> Result<SecurityReport, String> {
+    let root = state.config.lock().unwrap().skills_root.clone();
+    tauri::async_runtime::spawn_blocking(move || Ok(security::scan_skill_security(&root, &key)))
+        .await
+        .map_err(|e| format!("安全扫描任务异常: {e}"))?
+}
+
+/// 全库安全扫描汇总（技能列表 badge 用）
+#[tauri::command]
+pub async fn scan_security_summary(
+    state: State<'_, AppState>,
+) -> Result<Vec<SecuritySummaryItem>, String> {
+    let root = state.config.lock().unwrap().skills_root.clone();
+    tauri::async_runtime::spawn_blocking(move || Ok(security::scan_security_summary(&root)))
+        .await
+        .map_err(|e| format!("安全扫描任务异常: {e}"))?
+}
+
+// ================= Doctor 体检 =================
+
+/// 体检扫描（async：要遍历所有 Agent 目录 + 技能库）
+#[tauri::command]
+pub async fn doctor_scan(state: State<'_, AppState>) -> Result<Vec<DoctorIssue>, String> {
+    let cfg = state.config.lock().unwrap().clone();
+    tauri::async_runtime::spawn_blocking(move || Ok(doctor::doctor_scan(&cfg)))
+        .await
+        .map_err(|e| format!("体检任务异常: {e}"))?
+}
+
+/// 执行体检修复（选中的问题 id 列表），修复动作写入审计日志
+#[tauri::command]
+pub fn doctor_fix(state: State<AppState>, ids: Vec<String>) -> Result<DoctorFixResult, String> {
+    let (result, actions) = {
+        let mut cfg = state.config.lock().unwrap();
+        doctor::doctor_fix(&mut cfg, &ids)
+    };
+    if !actions.is_empty() {
+        let mut cfg = state.config.lock().unwrap();
+        push_audit(
+            &mut cfg,
+            AuditEntry {
+                id: format!("{}-doctor", now_ts()),
+                ts: now_ts(),
+                action: "doctor_fix".into(),
+                agent_id: "-".into(),
+                detail: format!(
+                    "体检修复：成功 {} 项，失败 {} 项",
+                    result.fixed, result.failed
+                ),
+                actions,
+            },
+        );
+    }
+    save_config(&state)?;
+    Ok(result)
+}
+
+// ================= Token 上下文预算 =================
+
+/// 各 Agent 启用技能的 token 统计（async：要读每个技能的 SKILL.md，带缓存）
+#[tauri::command]
+pub async fn token_stats(state: State<'_, AppState>) -> Result<Vec<AgentTokenStats>, String> {
+    let cfg = state.config.lock().unwrap().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        Ok(cfg
+            .agents
+            .iter()
+            .map(|a| tokens::agent_token_stats(a, &cfg))
+            .collect())
+    })
+    .await
+    .map_err(|e| format!("token 统计任务异常: {e}"))?
+}
+
+/// 设置每个 Agent 的常驻上下文预算（token 数）
+#[tauri::command]
+pub fn set_token_budget(state: State<AppState>, budget: u64) -> Result<AppConfig, String> {
+    if budget < 1000 {
+        return Err("预算不能低于 1000 tokens".into());
+    }
+    {
+        let mut cfg = state.config.lock().unwrap();
+        cfg.token_budget = budget;
+    }
+    save_config(&state)?;
+    Ok(state.config.lock().unwrap().clone())
+}
+
+// ================= 环境清单导出/导入 =================
+
+/// 导出环境清单到技能库根目录，返回落盘路径
+#[tauri::command]
+pub fn export_manifest(state: State<AppState>) -> Result<String, String> {
+    let cfg = state.config.lock().unwrap();
+    manifest::write_manifest(&cfg, env!("CARGO_PKG_VERSION"))
+}
+
+/// 导入环境清单（覆盖分配关系），写入审计日志
+#[tauri::command]
+pub fn import_manifest(
+    state: State<AppState>,
+    path: String,
+) -> Result<ManifestImportResult, String> {
+    let r = {
+        let mut cfg = state.config.lock().unwrap();
+        let r = manifest::import_manifest(&mut cfg, &path)?;
+        push_audit(
+            &mut cfg,
+            AuditEntry {
+                id: format!("{}-manifest", now_ts()),
+                ts: now_ts(),
+                action: "import_manifest".into(),
+                agent_id: "-".into(),
+                detail: r.message.clone(),
+                actions: Vec::new(),
+            },
+        );
+        r
+    };
+    save_config(&state)?;
+    Ok(r)
+}
+
+/// 技能库根目录里最新的清单文件路径
+#[tauri::command]
+pub fn latest_manifest(state: State<AppState>) -> Option<String> {
+    let cfg = state.config.lock().unwrap();
+    manifest::latest_manifest_path(&cfg.skills_root)
+}
+
+/// 在资源管理器中显示某个文件（通用小命令）
+#[tauri::command]
+pub fn reveal_path(path: String) -> Result<(), String> {
+    if !PathBuf::from(&path).exists() {
+        return Err(format!("路径不存在: {path}"));
+    }
+    let out = hidden_command("explorer")
+        .args(["/select,", &path])
+        .output()
+        .map_err(|e| format!("打开资源管理器失败: {e}"))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err("打开资源管理器失败".into())
+    }
+}
+
+/// 测试专用的干净临时目录：名字带 pid，避免并发/多进程跑测试时互相踩；
+/// 返回前已清空同名旧目录（调用方自己 create_dir_all）。
+#[cfg(test)]
+pub(crate) fn test_scratch(tag: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("ash_{}_{}", tag, std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    dir
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_agents_follow_current_user() {
+        let home = user_home().expect("测试环境应有用户主目录");
+        let home = home.to_string_lossy().to_string();
+        let agents = default_agents();
+        assert!(!agents.is_empty(), "应能构造出内置 Agent 列表");
+        for a in agents.iter().filter(|a| a.id == "claude" || a.id == "codex") {
+            assert!(
+                a.skills_dir.starts_with(&home) && a.skills_dir.ends_with(r"\skills"),
+                "{} 的路径应来自当前主目录: {}",
+                a.id,
+                a.skills_dir
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_hardcoded_paths_get_rewritten() {
+        let Some(home) = user_home() else { return };
+        let home = home.to_string_lossy().to_string();
+        if home.starts_with(LEGACY_HOME) {
+            return; // 作者机器本身就是 C:\Users\admin，改写为恒等
+        }
+        let mut agents = vec![
+            AgentDef {
+                id: "claude".into(),
+                name: "Claude Code".into(),
+                skills_dir: format!("{}\\.claude\\skills", LEGACY_HOME),
+                builtin: true,
+            },
+            AgentDef {
+                id: "mine".into(),
+                name: "自建".into(),
+                skills_dir: r"D:\custom\skills".into(),
+                builtin: false,
+            },
+        ];
+        migrate_legacy_agent_paths(&mut agents);
+        assert_eq!(agents[0].skills_dir, format!(r"{home}\.claude\skills"));
+        assert_eq!(agents[1].skills_dir, r"D:\custom\skills", "自建 Agent 不应被改动");
+    }
 }

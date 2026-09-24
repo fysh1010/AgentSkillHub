@@ -14,7 +14,13 @@ import {
   translateMany,
 } from "../store";
 import { computeDiff, importExistingLinks } from "../api/tauri";
+import { useEsc } from "../composables/useEsc";
 import type { DiffItem } from "../types";
+
+// Esc 关闭部署预览弹窗
+useEsc(() => {
+  if (showPreview.value) showPreview.value = false;
+});
 
 const selectedId = ref("");
 const diff = ref<DiffItem[]>([]);
@@ -26,10 +32,19 @@ const lastResult = ref<{ ok: boolean; summary: string } | null>(null);
 const agents = computed(() => store.agents);
 const current = computed(() => agents.value.find((a) => a.agent.id === selectedId.value) || null);
 
-// 技能按分类分组
+// 技能按分类分组（支持关键词过滤，技能多时快速定位）
+const skillKw = ref("");
 const grouped = computed(() => {
+  const kw = skillKw.value.trim().toLowerCase();
   const map = new Map<string, typeof store.skills>();
   store.skills.forEach((s) => {
+    if (
+      kw &&
+      !s.name.toLowerCase().includes(kw) &&
+      !s.description.toLowerCase().includes(kw) &&
+      !s.key.toLowerCase().includes(kw)
+    )
+      return;
     if (!map.has(s.category)) map.set(s.category, []);
     map.get(s.category)!.push(s);
   });
@@ -159,10 +174,6 @@ function diffTone(kind: string): string {
   if (kind === "expand_parent_link") return "amber";
   return "green";
 }
-
-function skillCount(key: string): number {
-  return grouped.value.reduce((n, [_, list]) => n + list.filter((s) => s.key === key).length, 0) || 0;
-}
 </script>
 
 <template>
@@ -233,6 +244,13 @@ function skillCount(key: string): number {
         </button>
       </div>
 
+      <!-- 技能搜索（技能多时快速定位） -->
+      <input
+        v-model="skillKw"
+        class="input skill-search"
+        placeholder="搜索技能名称 / 描述 / 目录名…"
+      />
+
       <!-- 技能开关列表 -->
       <div class="skill-groups">
         <div v-for="[cat, list] in grouped" :key="cat" class="group">
@@ -263,6 +281,10 @@ function skillCount(key: string): number {
               <span class="badge gray" v-if="!s.healthy" title="SKILL.md 缺失或 frontmatter 不合法">异常</span>
             </label>
           </div>
+        </div>
+        <div v-if="!grouped.length" class="card empty">
+          <div class="icon">⌕</div>
+          没有匹配「{{ skillKw }}」的技能，换个关键词试试。
         </div>
       </div>
     </section>
@@ -533,21 +555,8 @@ h2 {
   white-space: nowrap;
 }
 
-/* 描述翻译按钮 */
-.trans-btn {
-  display: inline-block;
-  padding: 0 7px;
-  border-radius: 9px;
-  border: 1px solid rgba(124, 92, 252, 0.35);
-  background: rgba(124, 92, 252, 0.08);
-  color: #7c5cfc;
-  font-size: 10.5px;
-  font-family: inherit;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-.trans-btn:hover {
-  background: rgba(124, 92, 252, 0.16);
+.skill-search {
+  margin-bottom: 14px;
 }
 
 .preview-note {

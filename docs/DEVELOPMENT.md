@@ -57,7 +57,8 @@ AppState { config: Mutex<AppConfig> }  文件系统（技能库 / Agent 目录 /
 - `scan_skills`：扫描技能库根目录，`_`/`.` 开头条目跳过（`_archive`、`.git` 不参与）；
 - `find_icon_b64`：探测技能目录官方图标（`_icon.*` → `icon.*` → `logo.*` → `assets/`），
   单文件上限 3MB，base64 data URL 返回；
-- `dir_size_cached`：目录大小 mtime 缓存（目录 mtime 未变直接命中），全量重扫近乎零 I/O；
+- `dir_size_cached`：目录大小缓存，键是**目录内容指纹**（自身 + 两层内条目 mtime 之和 + 条目数），
+  指纹未变直接命中，全量重扫近乎零 I/O。注意：三层以上的就地改文件仍会延迟失效（折中）；
 - `read_skill_detail`：SKILL.md 全文（200KB 截断）+ 两层文件清单 + 风险识别。
 
 ### deploy.rs — 部署引擎
@@ -83,10 +84,18 @@ AppState { config: Mutex<AppConfig> }  文件系统（技能库 / Agent 目录 /
 - `force_clear_for_update`：市场更新的旧版本移入回收站，可回滚。
 
 ### mod.rs — 命令路由与横切
+- `default_agents`：内置 Agent 的 skills 目录按 `%USERPROFILE%` / `%LOCALAPPDATA%` 推导，
+  不写死机器；`load_config` 顺带把老配置里写死的 `C:\Users\admin\...` 前缀纠正为当前主目录
+  （只改前缀，自建 Agent 与用户改过的深层路径不动）；
 - `load_config`：配置加载 + 内置源迁移（自动补腾讯源、剔除下线源、腾讯源置顶）；
 - `translate_text`：MyMemory 免费翻译（带 `de` 参数提额），磁盘缓存 `translations.json`，
   错误文本（MYMEMORY WARNING）识别；
 - `git_backup`：`git add -A + commit`（无仓库自动 init），porcelain 判「无变更」。
+
+### cache.rs — 按指纹失效的缓存
+- `cached(cache, key, fingerprint, compute)`：命中返回缓存值，否则算一次并写入，超过 500 条清空；
+- 大小统计 / 安全报告 / token 估算三处共用，指纹由各模块自己决定
+  （文件 mtime 或 `scan::dir_fingerprint` 目录内容指纹）。
 
 ## 5. 前端约定
 
@@ -102,10 +111,13 @@ AppState { config: Mutex<AppConfig> }  文件系统（技能库 / Agent 目录 /
 
 ```bash
 cd src-tauri
-cargo test --lib     # 21 个单元测试：frontmatter/块标量/base64/图标探测/junction 增删/
-                     # 回滚/导入链接/回收站 roundtrip/市场收编/URL 编码等
+cargo test --lib     # 43 个单元测试：frontmatter/块标量/技能库结构/base64/图标探测/目录指纹与缓存/
+                     # junction 增删/回滚/导入链接/回收站 roundtrip/市场收编/体检修复/清单/URL 编码等
 npx vue-tsc --noEmit # 前端类型检查
 ```
+
+测试一律在 `commands::test_scratch(tag)`（临时目录下带 pid 的专属目录）里造夹具，
+不依赖开发者真实的技能库目录，可并发跑。
 
 真实网络端到端测试（ignored，按需跑）：
 

@@ -1,8 +1,19 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
 import { store, loadAll, toast } from "../store";
-import { setSkillsRoot, saveAgents, detectAgents, gitBackup } from "../api/tauri";
+import {
+  setSkillsRoot,
+  saveAgents,
+  detectAgents,
+  gitBackup,
+  setTokenBudget,
+  exportManifest,
+  importManifest,
+  latestManifest,
+  revealPath,
+} from "../api/tauri";
 import type { AgentDef, DetectedAgent } from "../types";
+import pkg from "../../package.json";
 
 // ---------- Git 备份 ----------
 
@@ -62,6 +73,7 @@ async function addDetected(d: DetectedAgent) {
 }
 
 onMounted(loadDetected);
+onMounted(loadLatestManifest);
 
 async function saveRoot() {
   if (!root.value.trim()) {
@@ -88,6 +100,77 @@ async function doSaveAgents() {
   } catch (e) {
     toast(String(e), "error");
   }
+}
+
+// ---------- 上下文预算 ----------
+
+const budget = ref<number>(store.config?.token_budget || 8000);
+
+async function doSetBudget() {
+  const v = Number(budget.value);
+  if (!Number.isFinite(v) || v < 1000) {
+    toast("预算不能低于 1000 tokens", "error");
+    return;
+  }
+  try {
+    store.config = await setTokenBudget(v);
+    toast(`上下文预算已设为 ${v} tokens`, "success");
+  } catch (e) {
+    toast(String(e), "error");
+  }
+}
+
+// ---------- 环境清单导出/导入 ----------
+
+const exportMsg = ref("");
+const manifestPath = ref("");
+const importMsg = ref("");
+const missingSkills = ref(0);
+
+async function doExport() {
+  exportMsg.value = "";
+  try {
+    const path = await exportManifest();
+    exportMsg.value = `清单已导出：${path}`;
+    toast("环境清单已导出", "success");
+  } catch (e) {
+    toast(String(e), "error");
+    exportMsg.value = String(e);
+  }
+}
+
+async function doImport() {
+  if (!manifestPath.value.trim()) {
+    toast("请输入清单文件路径", "error");
+    return;
+  }
+  if (!confirm("导入清单将覆盖当前各 Agent 的技能分配关系，是否继续？")) return;
+  importMsg.value = "";
+  try {
+    const r = await importManifest(manifestPath.value.trim());
+    if (r.ok) {
+      await loadAll();
+      missingSkills.value = r.missing_skills;
+      importMsg.value = `✅ ${r.message}${r.missing_skills > 0 ? `（${r.missing_skills} 条指向缺失技能，将显示为已失效）` : ""}`;
+      toast("清单已导入", "success");
+    } else {
+      toast("导入失败：请确保路径正确", "error");
+    }
+  } catch (e) {
+    toast(String(e), "error");
+    importMsg.value = `❌ ${e}`;
+  }
+}
+
+async function loadLatestManifest() {
+  try {
+    const p = await latestManifest();
+    if (p) manifestPath.value = p;
+  } catch { /* 无清单是正常情况 */ }
+}
+
+function openManifestFolder(path: string) {
+  revealPath(path).catch(() => {});
 }
 
 function updateAgentField(idx: number, field: keyof AgentDef, val: string | boolean) {
@@ -213,6 +296,31 @@ function suggestId() {
       <div v-else class="hint">未检测到新的 Agent 工具 —— 已注册的不会重复出现。</div>
     </section>
 
+    <!-- 上下文预算 -->
+    <section class="card block">
+      <div class="block-head">
+        <h3>上下文预算</h3>
+        <button class="btn primary" :disabled="!budget" @click="doSetBudget()">保存</button>
+      </div>
+      <p class="block-desc">
+        每个 Agent 启用技能的 SKILL.md frontmatter（name + description）会常驻上下文，建议控制在 8000 tokens 以内。
+      </p>
+      <div class="row">
+        <input
+          v-model.number="budget"
+          type="number"
+          min="1000"
+          step="500"
+          class="input"
+          style="width: 160px"
+          placeholder="8000"
+        />
+        <span style="color: var(--muted); font-size: 12.5px; align-self: center">
+          当前 Agent 常驻上下文上限（tokens，≥1000）
+        </span>
+      </div>
+    </section>
+
     <!-- Git 备份 -->
     <section class="card block">
       <div class="block-head">
@@ -234,10 +342,31 @@ function suggestId() {
       <div v-if="backupMsgOut" class="hint" :class="backupOk ? 'green' : ''">{{ backupMsgOut }}</div>
     </section>
 
+    <!-- 环境清单 -->
+    <section class="card block">
+      <div class="block-head">
+        <h3>环境清单</h3>
+        <div style="display: flex; gap: 8px">
+          <button class="btn primary" :disabled="!!exportMsg" @click="doExport">导出清单</button>
+        </div>
+      </div>
+      <p class="block-desc">
+        把当前「技能库配置 + Agent 分配 + 收藏标签」导出为 JSON 清单，可在新机器或重装后一键恢复。
+        不含技能文件内容与审计日志；导入按 Agent 覆盖分配关系。
+      </p>
+      <div v-if="exportMsg" class="hint" :class="exportMsg.startsWith('✅') ? 'green' : ''" style="word-break: break-all">{{ exportMsg }}</div>
+      <div class="row" style="margin-top: 12px">
+        <input v-model="manifestPath" class="input" placeholder="清单文件路径" />
+        <button class="btn" :disabled="!!importMsg" @click="loadLatestManifest()">探测最新</button>
+        <button class="btn primary" :disabled="!!importMsg" @click="doImport()">校验并导入</button>
+      </div>
+      <div v-if="importMsg" class="hint" :class="importMsg.startsWith('✅') ? 'green' : ''" style="word-break: break-all">{{ importMsg }}</div>
+    </section>
+
     <section class="card block">
       <div class="block-head"><h3>关于</h3></div>
       <p class="block-desc">
-        AgentSkillHub v0.1.0 · 本地桌面应用，技能统一管理。
+        AgentSkillHub v{{ pkg.version }} · 本地桌面应用，技能统一管理。
         技能源文件永远只存放在技能库目录；本工具只负责在各 Agent 的 skills 目录创建 / 移除 Junction 链接。
       </p>
     </section>

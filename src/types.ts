@@ -150,6 +150,8 @@ export interface AppConfig {
   market_sources?: MarketSource[];
   /** 用户对技能的个性化标注（收藏 / 标签），key 为技能 key */
   skill_meta?: Record<string, SkillUserMeta>;
+  /** 每个 Agent 启用技能的常驻上下文预算（token 数） */
+  token_budget?: number;
 }
 
 export interface SyncResult {
@@ -172,4 +174,86 @@ export interface DeleteResult {
   unassigned_agents: string[];
   warnings: string[];
   message: string;
+}
+
+// ================= 安全扫描 =================
+
+/** 一条内容级安全命中 */
+export interface SecurityFinding {
+  file: string;
+  /** 行号；文件级命中为 0 */
+  line: number;
+  category: string;
+  level: string;
+  pattern: string;
+  snippet: string;
+}
+
+/** 单技能安全扫描报告 */
+export interface SecurityReport {
+  skill_key: string;
+  level: string;
+  findings: SecurityFinding[];
+  scanned_files: number;
+}
+
+/** 技能列表 badge 用的轻量汇总 */
+export interface SecuritySummaryItem {
+  skill_key: string;
+  level: string;
+  high: number;
+  medium: number;
+  low: number;
+}
+
+// ================= Doctor 体检 =================
+
+/** 一条体检问题 */
+export interface DoctorIssue {
+  id: string;
+  kind: string;
+  agent_id: string;
+  agent_name: string;
+  path: string;
+  skill_key: string;
+  detail: string;
+  fixable: boolean;
+}
+
+/** 体检修复结果 */
+export interface DoctorFixResult {
+  fixed: number;
+  failed: number;
+  messages: string[];
+}
+
+// ================= Token 上下文预算 =================
+
+/** 单个技能的 token 估算 */
+export interface SkillTokens {
+  skill_key: string;
+  name: string;
+  resident_tokens: number;
+  body_tokens: number;
+}
+
+/** 单个 Agent 的 token 统计 */
+export interface AgentTokenStats {
+  agent_id: string;
+  agent_name: string;
+  enabled_count: number;
+  resident_tokens: number;
+  body_tokens: number;
+  budget: number;
+  over_budget: boolean;
+  skills: SkillTokens[];
+}
+
+// ================= 环境清单导出/导入 =================
+
+/** 清单导入结果 */
+export interface ManifestImportResult {
+  ok: boolean;
+  message: string;
+  missing_skills: number;
 }

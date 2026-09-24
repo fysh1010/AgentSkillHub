@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { onMounted, ref, shallowRef, Transition, watch } from "vue";
-import { loadAll, store, ui } from "./store";
+import { loadAll, removeToast, store, ui } from "./store";
+import pkg from "../package.json";
 import Dashboard from "./views/Dashboard.vue";
 import Skills from "./views/Skills.vue";
 import AgentConfig from "./views/AgentConfig.vue";
 import AuditView from "./views/AuditView.vue";
 import Settings from "./views/Settings.vue";
 import Market from "./views/Market.vue";
+import Doctor from "./views/Doctor.vue";
 
 const pages = [
   { id: "dashboard", name: "总览", icon: "M4 13h6V4H4v9zm0 7h6v-5H4v5zm10 0h6v-9h-6v9zm0-16v5h6V4h-6z" },
@@ -14,11 +16,14 @@ const pages = [
   { id: "market", name: "技能市场", icon: "M4 4h2v12h14v2H4V4zm4 2h12v8H8V6zm3 2v1h2V8h-2zm-3 8h2v2h-2v-2zm4 0h2v2h-2v-2z" },
   { id: "agents", name: "Agent 配置", icon: "M4 4h7v7H4V4zm9 0h7v7h-7V4zM4 13h7v7H4v-7zm9 0h7v7h-7v-7z" },
   { id: "audit", name: "部署记录", icon: "M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm1 15h-2v-6h2zm0-8h-2V7h2z" },
+  { id: "doctor", name: "体检", icon: "M12 2 4 5v6c0 5 3.4 9.7 8 11 4.6-1.3 8-6 8-11V5l-8-3zm-1.2 13.6-3-3 1.4-1.4 1.6 1.6 4.2-4.2 1.4 1.4-5.6 5.6z" },
   { id: "settings", name: "设置", icon: "M19.4 13a7.6 7.6 0 0 0 0-2l2.1-1.6-2-3.5-2.5 1a7.6 7.6 0 0 0-1.7-1l-.4-2.6h-4l-.4 2.6a7.6 7.6 0 0 0-1.7 1l-2.5-1-2 3.5L6.6 11a7.6 7.6 0 0 0 0 2l-2.1 1.6 2 3.5 2.5-1a7.6 7.6 0 0 0 1.7 1l.4 2.6h4l.4-2.6a7.6 7.6 0 0 0 1.7-1l2.5 1 2-3.5-2.1-1.6zM12 15.5A3.5 3.5 0 1 1 15.5 12 3.5 3.5 0 0 1 12 15.5z" },
 ];
 
 const current = ref(ui.page);
 const view = shallowRef(Dashboard);
+
+const TOAST_ICONS: Record<string, string> = { success: "✓", error: "✕", info: "i" };
 
 const pageMap: Record<string, any> = {
   dashboard: Dashboard,
@@ -26,6 +31,7 @@ const pageMap: Record<string, any> = {
   market: Market,
   agents: AgentConfig,
   audit: AuditView,
+  doctor: Doctor,
   settings: Settings,
 };
 
@@ -86,7 +92,7 @@ onMounted(() => {
           <span class="dot" :class="{ ok: store.config?.skills_root }"></span>
           {{ store.config?.skills_root || "未设置技能库" }}
         </div>
-        <div class="ver">v0.1.0 · 本地运行 · 数据不出本机</div>
+        <div class="ver">v{{ pkg.version }} · 本地运行 · 数据不出本机</div>
       </div>
     </aside>
 
@@ -101,7 +107,9 @@ onMounted(() => {
     <!-- Toast -->
     <div class="toast-wrap">
       <div v-for="t in store.toasts" :key="t.id" class="toast" :class="t.type">
-        {{ t.text }}
+        <span class="toast-icon">{{ TOAST_ICONS[t.type] || "i" }}</span>
+        <span class="toast-text">{{ t.text }}</span>
+        <button class="toast-close" aria-label="关闭" @click="removeToast(t.id)">✕</button>
       </div>
     </div>
   </div>
