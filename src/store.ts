@@ -7,6 +7,7 @@ import type {
   DeployResult,
   DeleteResult,
   AgentTokenStats,
+  MachineInventory,
 } from "./types";
 
 // ---------- 英文描述翻译（全局缓存，后端另有一份磁盘缓存） ----------
@@ -79,15 +80,46 @@ export const store = reactive({
   config: null as AppConfig | null,
   loading: false,
   toasts: [] as ToastItem[],
-  /** 体检问题数（null = 尚未扫描过） */
-  doctorCount: null as number | null,
 });
 
 /** 全局 UI 状态（跨页面跳转用） */
 export const ui = reactive({
-  /** 当前页：dashboard / skills / market / agents / doctor / audit / settings */
+  /** 当前页：dashboard / skills / market / agents / audit / settings */
   page: "dashboard",
+  settingsTab: "agents",
 });
+
+export function openAgentSettings() {
+  ui.settingsTab = "agents";
+  ui.page = "settings";
+}
+
+export const discovery = reactive({
+  inventory: null as MachineInventory | null,
+  loading: false,
+  error: "",
+});
+
+let discoveryRequest: Promise<void> | null = null;
+export function discoverMachine(): Promise<void> {
+  if (discoveryRequest) return discoveryRequest;
+  discoveryRequest = runDiscovery().finally(() => { discoveryRequest = null; });
+  return discoveryRequest;
+}
+
+async function runDiscovery(): Promise<void> {
+  discovery.loading = true;
+  discovery.error = "";
+  try {
+    discovery.inventory = await api.refreshDiscovery();
+    await loadAll();
+  } catch (e) {
+    discovery.error = String(e);
+    toast(`本机发现失败：${e}`, "error");
+  } finally {
+    discovery.loading = false;
+  }
+}
 
 /** 技能 key → 安全级别（high/medium/low/none），后台扫描汇总填充 */
 export const secLevels = reactive<Record<string, string>>({});
@@ -146,17 +178,20 @@ export function removeToast(id: number) {
   if (i >= 0) store.toasts.splice(i, 1);
 }
 
+let syncRequest = 0;
 export async function loadAll(): Promise<void> {
+  const request = ++syncRequest;
   store.loading = true;
   try {
     const data = await api.getSyncData();
+    if (request !== syncRequest) return;
     store.skills = data.skills;
     store.agents = data.agents;
     store.config = data.config;
   } catch (e) {
     toast(String(e), "error");
   } finally {
-    store.loading = false;
+    if (request === syncRequest) store.loading = false;
   }
 }
 

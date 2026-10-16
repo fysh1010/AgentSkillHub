@@ -58,6 +58,50 @@ export interface DetectedAgent {
   id: string;
   name: string;
   skills_dir: string;
+  /** 内置技能来源用：所属产品（同一产品的多处实例归一组）；普通 Agent 为空 */
+  group?: string;
+}
+
+export interface MachineAgent {
+  id: string;
+  name: string;
+  skills_dir: string;
+  resolved_dir: string;
+  dir_exists: boolean;
+  registered: boolean;
+  known: boolean;
+  shared: boolean;
+  confidence: "confirmed" | "configured" | "possible" | "missing";
+  install_dir: string;
+  evidence: { kind: string; path: string }[];
+  installed: boolean;
+  management_enabled: boolean;
+  executable_path: string;
+  custom: boolean;
+}
+
+export interface BuiltinSource {
+  id: string;
+  name: string;
+  group: string;
+  skills_dir: string;
+  resolved_dir: string;
+  skill_count: number;
+}
+
+export interface MachineInventory {
+  home_dir: string;
+  agents: MachineAgent[];
+  sources: BuiltinSource[];
+  warnings: string[];
+  scanned_at: number;
+  catalog_count: number;
+}
+
+export interface AgentPreference {
+  enabled: boolean;
+  executable_path: string;
+  manual_confirmed: boolean;
 }
 
 export interface MarketSource {
@@ -145,6 +189,7 @@ export interface AgentConfig {
 export interface AppConfig {
   skills_root: string;
   agents: AgentDef[];
+  agent_preferences: Record<string, AgentPreference>;
   agent_configs: Record<string, AgentConfig>;
   audit: AuditEntry[];
   market_sources?: MarketSource[];
@@ -204,27 +249,6 @@ export interface SecuritySummaryItem {
   high: number;
   medium: number;
   low: number;
-}
-
-// ================= Doctor 体检 =================
-
-/** 一条体检问题 */
-export interface DoctorIssue {
-  id: string;
-  kind: string;
-  agent_id: string;
-  agent_name: string;
-  path: string;
-  skill_key: string;
-  detail: string;
-  fixable: boolean;
-}
-
-/** 体检修复结果 */
-export interface DoctorFixResult {
-  fixed: number;
-  failed: number;
-  messages: string[];
 }
 
 // ================= Token 上下文预算 =================

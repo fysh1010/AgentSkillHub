@@ -86,6 +86,65 @@ pub struct DetectedAgent {
     pub id: String,
     pub name: String,
     pub skills_dir: String,
+    /// 仅内置技能来源使用：所属产品名（同一产品的多个插件/场景归到一组）
+    #[serde(default)]
+    pub group: String,
+}
+
+/// 发现结果保留证据，配置目录本身不等于程序仍然安装。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DetectionEvidence {
+    pub kind: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MachineAgent {
+    pub id: String,
+    pub name: String,
+    pub skills_dir: String,
+    pub resolved_dir: String,
+    pub dir_exists: bool,
+    pub registered: bool,
+    pub known: bool,
+    pub shared: bool,
+    pub confidence: String,
+    pub install_dir: String,
+    pub evidence: Vec<DetectionEvidence>,
+    pub installed: bool,
+    pub management_enabled: bool,
+    pub executable_path: String,
+    pub custom: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BuiltinSource {
+    pub id: String,
+    pub name: String,
+    pub group: String,
+    pub skills_dir: String,
+    pub resolved_dir: String,
+    pub skill_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MachineInventory {
+    pub home_dir: String,
+    pub agents: Vec<MachineAgent>,
+    pub sources: Vec<BuiltinSource>,
+    pub warnings: Vec<String>,
+    pub scanned_at: u64,
+    pub catalog_count: usize,
+}
+
+/// 软件安装状态与本应用的配置权限分离；扫描不会改写这里的用户选择。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AgentPreference {
+    pub enabled: bool,
+    #[serde(default)]
+    pub executable_path: String,
+    #[serde(default)]
+    pub manual_confirmed: bool,
 }
 
 /// 技能市场源（clawhub 社区市场 / 任意 GitHub 技能仓库）
@@ -290,33 +349,6 @@ pub struct SecuritySummaryItem {
     pub low: u32,
 }
 
-// ================= Doctor 体检 =================
-
-/// 一条体检问题
-#[derive(Debug, Clone, Serialize)]
-pub struct DoctorIssue {
-    /// 稳定 ID："kind|agent_id|path"（修复时原样回传）
-    pub id: String,
-    /// broken_link / wrong_link / drift / stale_config / orphan_dir / unhealthy_skill
-    pub kind: String,
-    /// 库级问题为 ""
-    pub agent_id: String,
-    pub agent_name: String,
-    pub path: String,
-    pub skill_key: String,
-    /// 中文说明
-    pub detail: String,
-    pub fixable: bool,
-}
-
-/// 体检修复结果
-#[derive(Debug, Clone, Serialize)]
-pub struct DoctorFixResult {
-    pub fixed: u32,
-    pub failed: u32,
-    pub messages: Vec<String>,
-}
-
 // ================= Token 上下文预算 =================
 
 /// 单个技能的 token 估算
@@ -373,6 +405,8 @@ pub struct ManifestImportResult {
 pub struct AppConfig {
     pub skills_root: String,
     pub agents: Vec<AgentDef>,
+    #[serde(default)]
+    pub agent_preferences: HashMap<String, AgentPreference>,
     pub agent_configs: HashMap<String, AgentConfig>,
     pub audit: Vec<AuditEntry>,
     /// 技能市场源列表
@@ -395,6 +429,7 @@ impl Default for AppConfig {
         Self {
             skills_root: String::new(),
             agents: Vec::new(),
+            agent_preferences: HashMap::new(),
             agent_configs: HashMap::new(),
             audit: Vec::new(),
             market_sources: Vec::new(),

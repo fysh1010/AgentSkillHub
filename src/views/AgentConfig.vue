@@ -2,6 +2,7 @@
 import { computed, ref, watch } from "vue";
 import {
   store,
+  openAgentSettings,
   isEnabled,
   toggleSkill,
   deploy,
@@ -30,6 +31,9 @@ const showPreview = ref(false);
 const lastResult = ref<{ ok: boolean; summary: string } | null>(null);
 
 const agents = computed(() => store.agents);
+const agentKw = ref("");
+const visibleAgents = computed(() => agents.value.filter(a => a.agent.name.toLowerCase().includes(agentKw.value.trim().toLowerCase())));
+
 const current = computed(() => agents.value.find((a) => a.agent.id === selectedId.value) || null);
 
 // 技能按分类分组（支持关键词过滤，技能多时快速定位）
@@ -77,11 +81,16 @@ function showDesc(d: string): string {
 }
 
 watch(selectedId, async (id) => {
+  diff.value = []; diffLoading.value = false; lastResult.value = null; showPreview.value = false;
   if (!id) return;
   await refreshDiff(id);
   // 选中 Agent 后自动把英文描述排队翻译（限流逐条，译完即显示）
   translateMany(store.skills.map((s) => s.description));
 });
+
+watch(() => agents.value.map(a => a.agent.id), ids => {
+  if (!ids.includes(selectedId.value)) selectedId.value = ids[0] || "";
+}, {immediate:true});
 
 function selectAgent(id: string) {
   selectedId.value = id;
@@ -91,11 +100,12 @@ async function refreshDiff(agentId: string = selectedId.value) {
   if (!agentId) return;
   diffLoading.value = true;
   try {
-    diff.value = await computeDiff(agentId);
+    const result = await computeDiff(agentId);
+    if (selectedId.value === agentId) diff.value = result;
   } catch (e) {
     toast(String(e), "error");
   } finally {
-    diffLoading.value = false;
+    if (selectedId.value === agentId) diffLoading.value = false;
   }
 }
 
@@ -181,11 +191,12 @@ function diffTone(kind: string): string {
     <!-- 左：Agent 列表 -->
     <aside class="agent-list card">
       <div class="list-head">
-        <b>Agent 工具</b>
-        <button class="btn ghost" style="padding: 3px 8px" @click="loadAll()" title="刷新">↻</button>
+        <b>已允许配置</b>
+        <button class="btn ghost" style="padding: 3px 8px" @click="openAgentSettings()" title="管理工具">⚙</button>
       </div>
+      <input v-model="agentKw" class="input agent-search" placeholder="查找工具…" aria-label="搜索已允许配置的 Agent" />
       <button
-        v-for="a in agents"
+        v-for="a in visibleAgents"
         :key="a.agent.id"
         class="agent-item"
         :class="{ active: selectedId === a.agent.id }"
@@ -196,8 +207,9 @@ function diffTone(kind: string): string {
         <span class="agent-count">{{ a.enabled_count }}</span>
       </button>
       <div v-if="!agents.length" class="empty" style="padding: 24px 8px">
-        暂无 Agent，请先到「设置」注册。
+        请在设置中开启已安装工具的「允许配置」。<button class="btn" style="margin-top:12px" @click="openAgentSettings()">管理工具 →</button>
       </div>
+      <div v-if="agents.length && !visibleAgents.length" class="empty">没有匹配的工具</div>
     </aside>
 
     <!-- 右：配置 -->
@@ -209,7 +221,7 @@ function diffTone(kind: string): string {
             <span class="badge" :class="!current.dir_ok ? 'red' : current.drift ? 'amber' : 'green'">
               {{ current.message }}
             </span>
-            <span class="badge gray" v-if="current.agent.builtin">内置</span>
+            <span class="badge gray" v-if="current.agent.builtin">已知产品</span>
           </div>
           <code class="dir">{{ current.agent.skills_dir }}</code>
         </div>
@@ -340,10 +352,11 @@ function diffTone(kind: string): string {
 </template>
 
 <style scoped>
+.agent-search { margin:0 10px 12px; width:calc(100% - 20px); font-size:11px; }
 .config-layout {
   display: flex;
   gap: 16px;
-  height: calc(100vh - 52px);
+  height: calc(100vh - 126px);
 }
 
 .agent-list {
@@ -417,6 +430,7 @@ function diffTone(kind: string): string {
 }
 .agent-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   justify-content: space-between;
   gap: 14px;
@@ -424,6 +438,7 @@ function diffTone(kind: string): string {
 }
 .head-line {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
 }
@@ -464,7 +479,7 @@ h2 {
 .parent-banner {
   background: var(--amber-soft);
   border-color: rgba(251, 191, 36, 0.45);
-  color: #fde68a;
+  color: var(--amber);
   font-size: 13px;
   padding: 11px 14px;
   margin-bottom: 12px;

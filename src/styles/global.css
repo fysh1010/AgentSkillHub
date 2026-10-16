@@ -1,30 +1,44 @@
-/* ============ AgentSkillHub 全局样式 · WorkBuddy 风格 ============ */
+/* AgentSkillHub · 黑白工作台；主题只改变交互强调色。 */
 :root {
-  --bg: #f4f6fb;
-  --bg-soft: #f7f9fd;
+  --bg: #ffffff;
+  --bg-soft: #fafafa;
   --panel: #ffffff;
-  --panel-2: #f5f7fc;
-  --border: #e4e9f4;
-  --border-soft: #edf1f9;
-  --text: #1c2333;
-  --muted: #5f6b85;
-  --faint: #9aa4bd;
-  --accent: #4e6ef2;
-  --accent-2: #7c5cfc;
-  --accent-deep: #3d5be0;
-  --accent-soft: #eef1ff;
-  --accent-ring: rgba(78, 110, 242, 0.16);
-  --green: #12b76a;
-  --green-soft: rgba(18, 183, 106, 0.1);
-  --amber: #f59e0b;
-  --amber-soft: rgba(245, 158, 11, 0.12);
-  --red: #ef4444;
-  --red-soft: rgba(239, 68, 68, 0.1);
-  --radius: 14px;
-  --radius-sm: 10px;
-  --shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 10px 28px rgba(16, 24, 40, 0.07);
-  --shadow-sm: 0 1px 3px rgba(16, 24, 40, 0.05);
-  --grad: linear-gradient(135deg, #4e6ef2, #7c5cfc);
+  --panel-2: #f4f4f5;
+  --border: #e4e4e7;
+  --border-soft: #efeff1;
+  --text: #18181b;
+  --muted: #71717a;
+  --faint: #8a8a94;
+  --accent: #202024;
+  --accent-2: #52525b;
+  --accent-deep: #09090b;
+  --accent-soft: #f1f1f3;
+  --accent-ring: rgba(24, 24, 27, 0.1);
+  --accent-contrast: #ffffff;
+  --sidebar-bg: #fafafa;
+  --nav-active-bg: #ececee;
+  --nav-active-text: #18181b;
+  --green: #27835e;
+  --green-soft: #eff8f3;
+  --amber: #a16c19;
+  --amber-soft: #fff8eb;
+  --red: #cf4949;
+  --red-soft: #fff1f1;
+  --radius: 10px;
+  --radius-sm: 6px;
+  --shadow: 0 4px 18px rgba(24, 24, 27, 0.055);
+  --shadow-sm: 0 1px 2px rgba(24, 24, 27, 0.025);
+  --grad: var(--accent);
+}
+
+:root[data-appearance="blue"] {
+  --accent: #2563eb;
+  --accent-2: #3b82f6;
+  --accent-deep: #1d4ed8;
+  --accent-soft: #eff6ff;
+  --accent-ring: rgba(37, 99, 235, 0.13);
+  --nav-active-bg: #eaf1ff;
+  --nav-active-text: #215ad6;
 }
 
 * {
@@ -40,11 +54,8 @@ body,
 }
 
 body {
-  font-family: "Segoe UI", "MiSans", "Microsoft YaHei", "PingFang SC", system-ui, -apple-system, sans-serif;
+  font-family: "MiSans", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", sans-serif;
   background: var(--bg);
-  background-image: radial-gradient(1200px 500px at 85% -10%, rgba(124, 92, 252, 0.07), transparent 60%),
-    radial-gradient(900px 420px at -5% 0%, rgba(78, 110, 242, 0.06), transparent 55%);
-  background-attachment: fixed;
   color: var(--text);
   font-size: 14px;
   line-height: 1.6;
@@ -60,11 +71,11 @@ body {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #ccd4e6;
+  background: #d4d4d8;
   border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #aeb9d4;
+  background: #a1a1aa;
 }
 
 ::selection {
@@ -75,7 +86,7 @@ body {
 /* ---------- 通用元素 ---------- */
 .card {
   background: var(--panel);
-  border: 1px solid var(--border-soft);
+  border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 16px;
   box-shadow: var(--shadow-sm);
@@ -85,7 +96,7 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 7px 14px;
+  padding: 8px 14px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
   background: var(--panel);
@@ -106,16 +117,17 @@ body {
   cursor: not-allowed;
 }
 .btn.primary {
-  background: var(--grad);
-  border: none;
-  color: #fff;
-  font-weight: 600;
-  box-shadow: 0 4px 14px rgba(78, 110, 242, 0.32);
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  color: var(--accent-contrast);
+  font-weight: 500;
+  box-shadow: var(--shadow-sm);
 }
 .btn.primary:hover {
-  filter: brightness(1.07);
+  background: var(--accent-deep);
+  border-color: var(--accent-deep);
   color: #fff;
-  box-shadow: 0 6px 18px rgba(78, 110, 242, 0.42);
+  box-shadow: var(--shadow-sm);
 }
 .btn.danger {
   background: var(--red-soft);
@@ -142,8 +154,8 @@ body {
   align-items: center;
   gap: 4px;
   padding: 2px 9px;
-  border-radius: 20px;
-  font-size: 12px;
+  border-radius: 5px;
+  font-size: 11px;
   font-weight: 500;
 }
 .badge.green {
@@ -152,7 +164,7 @@ body {
 }
 .badge.amber {
   background: var(--amber-soft);
-  color: #d97706;
+  color: var(--amber);
 }
 .badge.red {
   background: var(--red-soft);
@@ -163,7 +175,7 @@ body {
   color: var(--accent);
 }
 .badge.gray {
-  background: rgba(154, 164, 189, 0.12);
+  background: var(--panel-2);
   color: var(--muted);
 }
 
@@ -182,7 +194,7 @@ body {
   position: absolute;
   inset: 0;
   border-radius: 22px;
-  background: #d4dbeb;
+  background: #d4d4d8;
   transition: background 0.2s;
 }
 .switch .track::after {
@@ -361,19 +373,26 @@ textarea.input {
 /* 页头通用 */
 .page-head {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
-  margin-bottom: 20px;
+  gap: 20px;
+  margin-bottom: 26px;
 }
 .page-head h1 {
-  font-size: 22px;
-  font-weight: 700;
-  letter-spacing: -0.3px;
+  font-size: 26px;
+  font-weight: 650;
+  letter-spacing: -0.8px;
 }
+.eyebrow { color:var(--faint); font:500 11px "Bahnschrift",sans-serif; letter-spacing:1.2px; margin-bottom:8px; }
+code { font-family:"Cascadia Code","Consolas",monospace; }
+button, input, select, textarea { font-family:inherit; }
+button:focus-visible, a:focus-visible, [tabindex]:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+button:disabled { cursor:not-allowed; opacity:.55; }
+@media (prefers-reduced-motion:reduce) { *, *::before, *::after { animation:none !important; transition:none !important; scroll-behavior:auto !important; } }
 .page-head .sub {
   color: var(--muted);
   font-size: 13px;
-  margin-top: 3px;
+  margin-top: 7px;
 }
 
 /* ---------- 跨页面共享组件（原各视图内重复定义，统一提取） ---------- */
@@ -390,7 +409,7 @@ textarea.input {
   align-items: center;
   gap: 5px;
   padding: 5px 12px;
-  border-radius: 20px;
+  border-radius: 6px;
   border: 1px solid var(--border);
   background: var(--panel);
   color: var(--muted);
@@ -419,16 +438,16 @@ textarea.input {
   margin-left: 6px;
   padding: 0 7px;
   border-radius: 9px;
-  border: 1px solid rgba(124, 92, 252, 0.35);
-  background: rgba(124, 92, 252, 0.08);
-  color: #7c5cfc;
+  border: 1px solid var(--border);
+  background: var(--accent-soft);
+  color: var(--accent);
   font-size: 10.5px;
   font-family: inherit;
   cursor: pointer;
   transition: all 0.15s;
 }
 .trans-btn:hover {
-  background: rgba(124, 92, 252, 0.16);
+  background: var(--green-soft);
 }
 
 /* Agent 分配开关行（技能详情 / 安装后启用弹窗） */

@@ -14,7 +14,7 @@
 
 ## 2. 环境准备（Windows）
 
-1. **Node.js 18+** 与 npm
+1. **Node.js 22.12+** 与 npm
 2. **Rust 1.77+**（`rustup` 安装，需 MSVC 工具链 + VS Build Tools）
 3. **WebView2 运行时**（Win11 自带）
 4. 可选：Git（技能库备份功能用）
@@ -84,13 +84,25 @@ AppState { config: Mutex<AppConfig> }  文件系统（技能库 / Agent 目录 /
 - `force_clear_for_update`：市场更新的旧版本移入回收站，可回滚。
 
 ### mod.rs — 命令路由与横切
-- `default_agents`：内置 Agent 的 skills 目录按 `%USERPROFILE%` / `%LOCALAPPDATA%` 推导，
-  不写死机器；`load_config` 顺带把老配置里写死的 `C:\Users\admin\...` 前缀纠正为当前主目录
-  （只改前缀，自建 Agent 与用户改过的深层路径不动）；
+- 首次启动不预注册工具，默认技能库位于当前用户的 `AgentSkillHub/skills`；旧默认路径通过 `portable_agent_path` 迁移，自定义位置优先。
+- `discovery.rs` 综合程序侧证据与产品路径规则扫描本机，扫描只读；`agent_policy.rs` 统一判断已安装、允许配置和写入权限。
 - `load_config`：配置加载 + 内置源迁移（自动补腾讯源、剔除下线源、腾讯源置顶）；
 - `translate_text`：MyMemory 免费翻译（带 `de` 参数提额），磁盘缓存 `translations.json`，
   错误文本（MYMEMORY WARNING）识别；
 - `git_backup`：`git add -A + commit`（无仓库自动 init），porcelain 判「无变更」。
+
+### known_agents.rs — 各家产品的技能目录约定清单
+- `KNOWN_AGENTS`：63 条国内外产品的「全局/用户级」skills 目录模板（`Root` 锚点 + 相对段），
+  来源是各产品官方文档 + vercel-labs/skills 跨 Agent 路径表 + 本机实测；项目内目录（`.claude/skills`
+  等）不收录，那是随仓库走的；
+- `rel` 支持 `*` 通配段（可多段、逐层展开，单模板上限 128 个路径），用于按市场/插件/版本或账号分目录的产品
+  （如 `~/.meituan-catpaw/*/skills`、`~/.qoder-cn/plugins/cache/*/*/*/skills`），
+  展开后 id 追加实例名（`meituan-catpaw-anon`）以免撞注册表主键；
+- `KNOWN_SOURCES`：工具「自带技能」的位置（插件缓存、IDE 内置技能包）。这些**不**作为可部署 Agent 注册，
+  只由 `detect_builtin_sources` / `builtin_source_skills` / `adopt_builtin_skill` 三个命令做只读浏览与收编；
+  命令只认 source_id（后端按清单解析路径），前端传不进任意路径；`detect_sources` 还要求目录非空；
+- `detect_existing` 只报本机存在的目录；`template_path` 用于推导路径（通配项返回 None），目录存在不直接等同于程序已安装；
+- 清单未收录的新产品仍由 `detect_agents` 的通用 `~\.xxx\skills` 扫描兜底，显示名走 `name_for` 查表。
 
 ### cache.rs — 按指纹失效的缓存
 - `cached(cache, key, fingerprint, compute)`：命中返回缓存值，否则算一次并写入，超过 500 条清空；
@@ -104,15 +116,15 @@ AppState { config: Mutex<AppConfig> }  文件系统（技能库 / Agent 目录 /
   App.vue watch 它）、`transMap`（翻译缓存）；
 - **页面切换**：`App.vue` 用 `shallowRef` + `<Transition name="page">`，无路由库；
 - **样式**：主题变量在 `src/styles/global.css`（`--accent`、`--panel`、`--radius-sm` 等），
-  页面级样式 scoped；「腾讯 WorkBuddy 风格」浅色主题、蓝紫渐变 accent；
+  页面级样式 scoped；默认黑白、可切换蓝白主题，交互强调色由共享变量控制；
 - **翻译队列**：`translateMany` 逐条 180ms 限流，避免打爆免费接口。
 
 ## 6. 测试
 
 ```bash
 cd src-tauri
-cargo test --lib     # 43 个单元测试：frontmatter/块标量/技能库结构/base64/图标探测/目录指纹与缓存/
-                     # junction 增删/回滚/导入链接/回收站 roundtrip/市场收编/体检修复/清单/URL 编码等
+cargo test --lib     # 后端单元测试：frontmatter/块标量/技能库结构/base64/图标探测/目录指纹与缓存/
+                     # junction 增删/回滚/导入链接/回收站 roundtrip/市场收编/清单/URL 编码等
 npx vue-tsc --noEmit # 前端类型检查
 ```
 
@@ -127,19 +139,21 @@ cargo test --lib clawhub_real_install -- --ignored
 
 ## 7. 打包与发布
 
-```bash
-npm run tauri build
-# 产物：
-#   src-tauri/target/release/bundle/nsis/AgentSkillHub_<ver>_x64-setup.exe   安装包
-#   src-tauri/target/release/agentskillhub.exe                              便携版裸 exe
+```powershell
+& "node_modules/.bin/tauri.cmd" build --no-bundle --ci -- --locked
+& "scripts/package-portable.ps1" -ExePath "src-tauri/target/release/agentskillhub.exe"
 ```
 
-发布清单：
+打包脚本核对项目版本、EXE 文件版本和 ZIP 内程序的 SHA-256，只生成一个 `AgentSkillHub-v<版本>-portable.zip`；包内为 `AgentSkillHub.exe`，不包含个人配置或技能文件。
 
-1. 版本号三处同步：`package.json` / `src-tauri/tauri.conf.json` / `src-tauri/Cargo.toml`；
-2. 构建 → 组装 `release/`（安装包 + 便携 zip + 使用说明）；
-3. 更新 README 与本文件的版本引用；
-4. git tag `v0.2.0` 并推送，GitHub Release 上传两个产物。
+发布流程：
+
+1. 同步 `package.json`、`package-lock.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml` 与 Cargo 锁文件中的应用版本。
+2. 添加 `docs/releases/v<版本>.md`，完成类型检查、后端测试和本地构建。
+3. 提交并推送代码，再推送对应的 `v<版本>` 标签。
+4. GitHub Actions 检查代码、构建并核验 ZIP，在 Releases 发布唯一的 Windows x64 免安装包；手动触发只生成 Artifact。
+
+历史 Release 保留，新版本不再上传 NSIS 安装器。构建缓存和 `release/` 本地产物不提交到源码仓库。
 
 ## 8. 贡献注意
 

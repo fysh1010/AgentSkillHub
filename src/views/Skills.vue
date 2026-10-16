@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from "vue";
 import { marked } from "marked";
 import {
   store,
+  openAgentSettings,
   loadAll,
   isEnabled,
   toggleSkill,
@@ -27,6 +28,7 @@ import {
 } from "../api/tauri";
 import type { SkillInfo, SkillDetail, TrashItem, SecurityReport } from "../types";
 import { useEsc } from "../composables/useEsc";
+import SkillGlyph from "../components/SkillGlyph.vue";
 
 // Esc 按弹窗层级关闭：全文预览 > 删除确认 > 技能详情
 useEsc(() => {
@@ -99,52 +101,7 @@ function catCount(cat: string) {
   return store.skills.filter((s) => s.category === cat).length;
 }
 
-// ---------- 技能图标：官方图优先，emoji 渐变兜底 ----------
-
-const SKILL_EMOJI: Array<[RegExp, string]> = [
-  [/browser|web|http|html|url|page|chrome/i, "🌐"],
-  [/pdf|document|file|doc|markdown/i, "📄"],
-  [/video|yt|youtube|bilibili|ffmpeg|subtitle|screen/i, "🎬"],
-  [/audio|tts|voice|speech|music|podcast/i, "🎵"],
-  [/image|photo|picture|screenshot|vision|ocr/i, "🖼️"],
-  [/search|fetch|scrape|lookup|spider/i, "🔍"],
-  [/excel|sheet|csv|data|table|sql|database|analytics/i, "📊"],
-  [/word|office|text|write|draft|letter/i, "✍️"],
-  [/translate|language|i18n|locale/i, "🌏"],
-  [/design|ui|ux|art|style|brand|figma/i, "🎨"],
-  [/code|api|sdk|terminal|dev|git|github/i, "💻"],
-  [/agent|bot|llm|ai\b|gpt|claude|model/i, "🤖"],
-  [/security|privacy|auth|password/i, "🛡️"],
-  [/calendar|schedule|time|meeting|remind/i, "📅"],
-  [/mail|email|message|chat|im\b|wechat/i, "💬"],
-  [/game|play|unity/i, "🎮"],
-  [/tool|utils|utility|helper/i, "🧰"],
-];
-
-function skillEmoji(s: SkillInfo): string {
-  const hay = `${s.name} ${s.category} ${s.description}`;
-  for (const [re, e] of SKILL_EMOJI) {
-    if (re.test(hay)) return e;
-  }
-  return "🧩";
-}
-
-const SKILL_GRADS = [
-  "linear-gradient(135deg,#7c5cff,#b16cff)",
-  "linear-gradient(135deg,#ff6b9d,#ff9a76)",
-  "linear-gradient(135deg,#00b8d9,#3ddc97)",
-  "linear-gradient(135deg,#f59e0b,#ef4444)",
-  "linear-gradient(135deg,#06b6d4,#3b82f6)",
-  "linear-gradient(135deg,#8b5cf6,#ec4899)",
-];
-
-function skillGrad(s: SkillInfo): string {
-  let idx = 0;
-  for (const ch of s.key) idx = (idx + ch.charCodeAt(0)) % 997;
-  return SKILL_GRADS[idx % SKILL_GRADS.length];
-}
-
-/// 官方图标（技能目录内自带）→ emoji 兜底；官方图加载失败降级为 emoji
+// 官方图标优先，缺失或加载失败时使用统一线性图标。
 function onIconError(s: SkillInfo) {
   s.icon_b64 = "";
 }
@@ -311,7 +268,7 @@ onMounted(() => {
         @click="openDetail(s)"
       >
         <div class="skill-top">
-          <span class="skill-ico" :style="s.icon_b64 ? undefined : { background: skillGrad(s) }">
+          <span class="skill-ico">
             <img
               v-if="s.icon_b64"
               class="skill-ico-img"
@@ -320,15 +277,13 @@ onMounted(() => {
               loading="lazy"
               @error="onIconError(s)"
             />
-            <template v-else>{{ skillEmoji(s) }}</template>
+            <SkillGlyph v-else :label="s.name + ' ' + s.description" />
           </span>
           <span class="skill-name-wrap">
             <span class="skill-name">{{ s.name }}</span>
             <span class="skill-slug" v-if="s.key !== s.name" :title="s.key">{{ s.key }}</span>
           </span>
-          <span class="badge" :class="s.healthy ? 'green' : 'red'">
-            {{ s.healthy ? "OK" : "异常" }}
-          </span>
+          <span v-if="!s.healthy" class="badge red">异常</span>
           <button
             class="star-btn"
             :class="{ on: isStarred(s.key) }"
@@ -385,7 +340,6 @@ onMounted(() => {
           <span class="detail-head">
             <span
               class="skill-ico"
-              :style="selected!.icon_b64 ? undefined : { background: skillGrad(selected!) }"
             >
               <img
                 v-if="selected!.icon_b64"
@@ -394,7 +348,7 @@ onMounted(() => {
                 alt=""
                 @error="onIconError(selected!)"
               />
-              <template v-else>{{ skillEmoji(selected!) }}</template>
+              <SkillGlyph v-else :label="selected!.name + ' ' + selected!.description" />
             </span>
             <span class="detail-head-txt">
               <b style="font-size: 15px">{{ selected!.name }}</b>
@@ -443,6 +397,7 @@ onMounted(() => {
           </div>
 
           <h3 style="margin: 16px 0 10px; font-size: 13.5px; color: var(--muted)">已分配给以下 Agent</h3>
+          <div v-if="!store.agents.length" class="empty" style="padding:12px">请先在设置中允许配置本机工具。<button class="btn" @click="selected = null; openAgentSettings()">管理工具 →</button></div>
           <div class="assign-list">
             <label v-for="a in store.agents" :key="a.agent.id" class="assign-item">
               <span>{{ a.agent.name }}</span>
@@ -573,8 +528,8 @@ onMounted(() => {
   gap: 16px;
 }
 h1 {
-  font-size: 21px;
-  font-weight: 700;
+  font-size: 26px;
+  font-weight: 650;
 }
 .sub {
   color: var(--muted);
@@ -594,33 +549,35 @@ h1 {
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
-  gap: 12px;
+  gap: 16px;
 }
 .skill {
   cursor: pointer;
   transition: all 0.15s;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 12px;
 }
 .skill:hover {
   border-color: var(--accent);
-  transform: translateY(-2px);
   box-shadow: var(--shadow);
 }
 .skill-ico {
   width: 34px;
   height: 34px;
-  border-radius: 10px;
+  border-radius: 8px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   font-size: 17px;
-  color: #fff;
+  color: var(--muted);
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
   flex-shrink: 0;
-  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.25);
+  box-shadow: none;
   overflow: hidden;
 }
+.skill-ico :deep(svg) { width:18px; height:18px; }
 /* 展示官方原图：白底、去投影，避免自绘风格干扰官方视觉 */
 .skill-ico:has(.skill-ico-img) {
   background: #fff;

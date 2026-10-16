@@ -88,8 +88,8 @@ async function doClear() {
   margin-bottom: 16px;
 }
 h1 {
-  font-size: 21px;
-  font-weight: 700;
+  font-size: 26px;
+  font-weight: 650;
 }
 .sub {
   color: var(--muted);

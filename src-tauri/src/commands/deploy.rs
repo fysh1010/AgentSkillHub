@@ -642,6 +642,7 @@ mod tests {
             market_sources: Vec::new(),
             skill_meta: std::collections::HashMap::new(),
             token_budget: 8000,
+            agent_preferences: HashMap::new(),
         };
         let agent = AgentDef {
             id: "test".into(),
@@ -699,6 +700,7 @@ mod tests {
             market_sources: Vec::new(),
             skill_meta: std::collections::HashMap::new(),
             token_budget: 8000,
+            agent_preferences: HashMap::new(),
         };
         let result = deploy(&agent, &cfg, false);
         assert!(result.ok);
@@ -758,6 +760,7 @@ mod tests {
                 }],
             }],
             token_budget: 8000,
+            agent_preferences: HashMap::new(),
         };
         let rb = rollback_last(&cfg, "test");
         assert!(rb.ok, "回滚应成功: {}", rb.summary);
@@ -785,6 +788,7 @@ mod tests {
             market_sources: Vec::new(),
             skill_meta: std::collections::HashMap::new(),
             token_budget: 8000,
+            agent_preferences: HashMap::new(),
         };
         let agent = AgentDef {
             id: "test".into(),
@@ -818,6 +822,7 @@ mod tests {
             market_sources: Vec::new(),
             skill_meta: std::collections::HashMap::new(),
             token_budget: 8000,
+            agent_preferences: HashMap::new(),
         };
         let agent = AgentDef {
             id: "test".into(),

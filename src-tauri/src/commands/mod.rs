@@ -1,7 +1,9 @@
 pub mod cache;
+pub mod agent_policy;
 pub mod delete;
 pub mod deploy;
-pub mod doctor;
+pub mod discovery;
+pub mod known_agents;
 pub mod manifest;
 pub mod market;
 pub mod scan;
@@ -9,7 +11,6 @@ pub mod security;
 pub mod tokens;
 
 use crate::models::*;
-use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager, State};
@@ -17,6 +18,7 @@ use tauri::{AppHandle, Manager, State};
 pub struct AppState {
     pub config: Mutex<AppConfig>,
     pub handle: AppHandle,
+    pub inventory: Mutex<Option<MachineInventory>>,
 }
 
 /// 用户主目录（Windows 下 %USERPROFILE%，其他平台回退 $HOME）
@@ -28,69 +30,28 @@ fn user_home() -> Option<PathBuf> {
     env_dir("USERPROFILE").or_else(|| env_dir("HOME"))
 }
 
-/// 在用户主目录下拼路径，如 home\.\claude\skills
-fn in_home(parts: &[&str]) -> Option<String> {
-    let mut p = user_home()?;
-    for part in parts {
-        p = p.join(part);
-    }
-    Some(p.to_string_lossy().to_string())
+/// 已知清单的解析锚点
+fn agent_bases() -> Option<known_agents::Bases> {
+    Some(known_agents::Bases {
+        home: user_home()?,
+        local_appdata: env_dir("LOCALAPPDATA"),
+        appdata: env_dir("APPDATA"),
+    })
 }
 
 /// 内置 Agent 默认注册表（路径可在设置中修改）
-/// 全部按当前用户目录推导；拿不到主目录时返回空表，由 detect_agents 兜底发现。
+/// 取 known_agents 已知清单里的常用产品，按当前用户目录推导；
+/// 拿不到主目录时返回空表，由 detect_agents 兜底发现。
 fn default_agents() -> Vec<AgentDef> {
-    let local = env_dir("LOCALAPPDATA");
-    let doubao = local.as_ref().map(|d| {
-        d.join(r"Doubao\User Data\Default\.doubao\agent_mode\workspace\.user_skills")
-            .to_string_lossy()
-            .to_string()
-    });
-    let specs = [
-        ("claude", "Claude Code", in_home(&[".claude", "skills"])),
-        ("codex", "OpenAI Codex", in_home(&[".codex", "skills"])),
-        ("zcode", "Zcode", in_home(&[".zcode", "skills"])),
-        ("workbuddy", "WorkBuddy", in_home(&[".workbuddy", "skills"])),
-        ("agents", "Agents", in_home(&[".agents", "skills"])),
-    ];
-    let mut out = Vec::new();
-    for (id, name, dir) in specs {
-        if let Some(skills_dir) = dir {
-            out.push(AgentDef {
-                id: id.into(),
-                name: name.into(),
-                skills_dir,
-                builtin: true,
-            });
-        }
-    }
-    if let Some(skills_dir) = doubao {
-        out.push(AgentDef {
-            id: "doubao".into(),
-            name: "豆包 Doubao".into(),
-            skills_dir,
-            builtin: true,
-        });
-    }
-    out
+    // 首次启动不虚构已安装工具；扫描只读，登记由用户开启配置时完成。
+    Vec::new()
 }
 
-/// v0.2.1 及更早版本的内置 Agent 路径写死了作者机器的 C:\Users\admin，
-/// 老配置里存的仍是那些路径。这里只纠正前缀（子路径原样保留），
-/// 用户改过的深层路径与自建 Agent 不受影响。
-const LEGACY_HOME: &str = r"C:\Users\admin";
-
+/// 老版本内置路径迁移到当前用户；有效路径和用户自定义路径原样保留。
 fn migrate_legacy_agent_paths(agents: &mut [AgentDef]) {
-    let Some(home) = user_home() else { return };
-    let home = home.to_string_lossy().to_string();
-    for a in agents.iter_mut() {
-        if !a.builtin {
-            continue;
-        }
-        let Some(rest) = a.skills_dir.strip_prefix(LEGACY_HOME) else {
-            continue;
-        };
-        a.skills_dir = format!("{}{}", home, rest.replace('/', "\\"));
+    let Some(bases) = agent_bases() else { return };
+    for a in agents {
+        if let Some(path) = discovery::portable_agent_path(a, &bases) { a.skills_dir = path; }
     }
 }
 
@@ -131,7 +92,8 @@ pub fn load_config(app: &AppHandle) -> AppConfig {
         }
     }
     if cfg.skills_root.is_empty() {
-        cfg.skills_root = r"E:\my-skills".into();
+        cfg.skills_root = user_home().map(|p| p.join("AgentSkillHub/skills").to_string_lossy().to_string())
+            .unwrap_or_default();
     }
     if cfg.agents.is_empty() {
         cfg.agents = default_agents();
@@ -181,6 +143,10 @@ fn find_agent<'a>(cfg: &'a AppConfig, id: &str) -> Option<&'a AgentDef> {
     cfg.agents.iter().find(|a| a.id == id)
 }
 
+fn configurable_agent<'a>(cfg: &'a AppConfig, state: &AppState, id: &str) -> Result<&'a AgentDef, String> {
+    agent_policy::require_agent(cfg, state.inventory.lock().unwrap().as_ref(), id)
+}
+
 /// 追加一条审计记录（200 条封顶）
 fn push_audit(cfg: &mut AppConfig, entry: AuditEntry) {
     cfg.audit.push(entry);
@@ -190,25 +156,18 @@ fn push_audit(cfg: &mut AppConfig, entry: AuditEntry) {
     }
 }
 
-/// 常见 Agent 的友好显示名；未收录的做首字母大写兜底
+/// Agent 目录名的友好显示名：优先查内置已知清单，其余首字母大写兜底
 fn pretty_agent_name(id: &str) -> String {
-    let known = [
-        ("trae", "Trae"),
-        ("trae-cn", "Trae CN"),
-        ("qwen", "Qwen Code"),
+    if let Some(n) = known_agents::name_for(id) {
+        return n.to_string();
+    }
+    let aliases = [
         ("qwenworkcn", "Qwen Work"),
-        ("gemini", "Gemini CLI"),
-        ("iflow", "iFlow CLI"),
-        ("crush", "Crush"),
-        ("opencode", "OpenCode"),
-        ("copilot", "GitHub Copilot"),
-        ("kimi-code", "Kimi Code"),
         ("kilocode", "Kilo Code"),
         ("roo-code", "Roo Code"),
-        ("goose", "Goose"),
-        ("droid", "Droid"),
+        ("droid", "Factory Droid"),
     ];
-    for (k, v) in known {
+    for (k, v) in aliases {
         if k == id {
             return v.to_string();
         }
@@ -227,9 +186,10 @@ fn pretty_agent_name(id: &str) -> String {
 #[tauri::command]
 pub async fn get_sync_data(state: State<'_, AppState>) -> Result<SyncResult, String> {
     let cfg = state.config.lock().unwrap().clone();
+    let active = agent_policy::active_config(&cfg, state.inventory.lock().unwrap().as_ref());
     tauri::async_runtime::spawn_blocking(move || {
         let skills = scan::scan_skills(&cfg.skills_root);
-        let agents = cfg
+        let agents = active
             .agents
             .iter()
             .map(|a| deploy::agent_status(a, &cfg))
@@ -264,22 +224,7 @@ pub fn set_skills_root(state: State<AppState>, root: String) -> Result<AppConfig
     Ok(state.config.lock().unwrap().clone())
 }
 
-/// 保存 Agent 注册表（新增/编辑/删除）
-#[tauri::command]
-pub fn save_agents(state: State<AppState>, agents: Vec<AgentDef>) -> Result<AppConfig, String> {
-    {
-        let mut cfg = state.config.lock().unwrap();
-        let ids: Vec<String> = agents.iter().map(|a| a.id.clone()).collect();
-        cfg.agents = agents;
-        for id in ids {
-            cfg.agent_configs.entry(id).or_default();
-        }
-    }
-    save_config(&state)?;
-    Ok(state.config.lock().unwrap().clone())
-}
-
-/// 启用/禁用某 Agent 的某技能
+/// 修改已允许配置的 Agent 的技能分配
 #[tauri::command]
 pub fn toggle_skill(
     state: State<AppState>,
@@ -289,9 +234,7 @@ pub fn toggle_skill(
 ) -> Result<AppConfig, String> {
     {
         let mut cfg = state.config.lock().unwrap();
-        if find_agent(&cfg, &agent_id).is_none() {
-            return Err(format!("Agent 不存在: {agent_id}"));
-        }
+        configurable_agent(&cfg, &state, &agent_id)?;
         let ac = cfg.agent_configs.entry(agent_id).or_default();
         if enabled {
             if !ac.enabled_skills.contains(&skill_key) {
@@ -307,12 +250,10 @@ pub fn toggle_skill(
 
 /// 计算某 Agent 的部署差异
 #[tauri::command]
-pub fn compute_diff_cmd(state: State<AppState>, agent_id: String) -> Vec<DiffItem> {
+pub fn compute_diff_cmd(state: State<AppState>, agent_id: String) -> Result<Vec<DiffItem>, String> {
     let cfg = state.config.lock().unwrap();
-    let Some(agent) = find_agent(&cfg, &agent_id) else {
-        return Vec::new();
-    };
-    deploy::compute_diff(agent, &cfg)
+    let agent = configurable_agent(&cfg, &state, &agent_id)?;
+    Ok(deploy::compute_diff(agent, &cfg))
 }
 
 /// 执行部署（dry_run=true 仅预览）
@@ -324,9 +265,7 @@ pub fn deploy_cmd(
 ) -> Result<DeployResult, String> {
     let mut result = {
         let cfg = state.config.lock().unwrap();
-        let Some(agent) = find_agent(&cfg, &agent_id) else {
-            return Err(format!("Agent 不存在: {agent_id}"));
-        };
+        let agent = configurable_agent(&cfg, &state, &agent_id)?;
         deploy::deploy(agent, &cfg, dry_run)
     };
     if !dry_run && !result.actions.is_empty() {
@@ -364,6 +303,7 @@ pub fn deploy_cmd(
 pub fn rollback_cmd(state: State<AppState>, agent_id: String) -> Result<DeployResult, String> {
     let result = {
         let cfg = state.config.lock().unwrap();
+        configurable_agent(&cfg, &state, &agent_id)?;
         deploy::rollback_last(&cfg, &agent_id)
     };
     if !result.actions.is_empty() && result.actions.iter().any(|a| a.ok) {
@@ -393,7 +333,8 @@ pub fn rollback_cmd(state: State<AppState>, agent_id: String) -> Result<DeployRe
 pub fn delete_skill(state: State<AppState>, key: String) -> Result<DeleteResult, String> {
     let result = {
         let mut cfg = state.config.lock().unwrap();
-        delete::delete_skill(&mut cfg, &key)?
+        let allowed = agent_policy::active_config(&cfg,state.inventory.lock().unwrap().as_ref()).agents.into_iter().map(|a| a.id).collect();
+        delete::delete_skill_with_access(&mut cfg, &key, &allowed)?
     };
     // 破坏性操作留痕
     {
@@ -442,72 +383,81 @@ pub fn clear_audit(state: State<AppState>) -> Result<(), String> {
 #[tauri::command]
 pub fn refresh_status(state: State<AppState>) -> Vec<AgentStatus> {
     let cfg = state.config.lock().unwrap();
-    cfg.agents
+    agent_policy::active_config(&cfg, state.inventory.lock().unwrap().as_ref()).agents
         .iter()
         .map(|a| deploy::agent_status(a, &cfg))
         .collect()
 }
 
-/// 扫描本机用户目录，发现已安装但未注册的 Agent skills 目录
-/// （兼容目录被重定向到其他盘的情况：Junction 穿透后按最终路径判断）
+/// 兼容旧界面的未接入目录查询，复用本机发现规则。
 #[tauri::command]
-pub fn detect_agents(state: State<AppState>) -> Vec<DetectedAgent> {
-    let cfg = state.config.lock().unwrap();
-    let norm = |s: &str| s.replace('/', "\\").trim_end_matches('\\').to_lowercase();
-    let registered: Vec<String> = cfg.agents.iter().map(|a| norm(&a.skills_dir)).collect();
-    let mut out: Vec<DetectedAgent> = Vec::new();
+pub async fn detect_agents(state: State<'_, AppState>) -> Result<Vec<DetectedAgent>, String> {
+    let registered = state.config.lock().unwrap().agents.clone();
+    let bases = agent_bases().ok_or("无法定位当前用户目录")?;
+    tauri::async_runtime::spawn_blocking(move || discovery::inventory(&bases, &registered).agents
+        .into_iter().filter(|a| !a.registered)
+        .map(|a| DetectedAgent { id: a.id, name: a.name, skills_dir: a.skills_dir, group: String::new() }).collect())
+        .await.map_err(|e| format!("发现 Agent 失败：{e}"))
+}
 
-    let home = match std::env::var("USERPROFILE") {
-        Ok(h) => PathBuf::from(h),
-        Err(_) => return out,
-    };
+/// 只读扫描，绝不自动登记或重新开启用户关闭的 Agent。
+#[tauri::command]
+pub async fn refresh_discovery(state: State<'_, AppState>) -> Result<MachineInventory, String> {
+    let bases = agent_bases().ok_or("无法定位当前用户目录")?;
+    let cfg = state.config.lock().unwrap().clone();
+    let registered = cfg.agents.clone();
+    let mut result = tauri::async_runtime::spawn_blocking(move || discovery::inventory(&bases, &registered))
+        .await.map_err(|e| format!("本机发现失败：{e}"))?;
+    // 扫描期间开关可能被修改，使用提交时的最新配置进行标注。
+    let current = state.config.lock().unwrap();
+    agent_policy::annotate(&current, &mut result);
+    *state.inventory.lock().unwrap() = Some(result.clone());
+    Ok(result)
+}
 
-    let mut push = |id: String, name: String, dir: PathBuf| {
-        let key = norm(&dir.to_string_lossy());
-        if registered.contains(&key) {
-            return;
-        }
-        if out.iter().any(|d| norm(&d.skills_dir) == key) {
-            return;
-        }
-        out.push(DetectedAgent {
-            id,
-            name,
-            skills_dir: dir.to_string_lossy().to_string(),
-        });
-    };
-
-    // 1. ~\.xxx\skills（点开头目录，含经过 Junction 重定向的）
-    if let Ok(rd) = fs::read_dir(&home) {
-        for e in rd.flatten() {
-            let dn = e.file_name().to_string_lossy().to_string();
-            if !dn.starts_with('.') || dn.len() < 2 {
-                continue;
-            }
-            let skills = e.path().join("skills");
-            if skills.is_dir() {
-                let id = dn[1..].to_string();
-                let name = pretty_agent_name(&id);
-                push(id, name, skills);
-            }
-        }
+#[tauri::command]
+pub fn set_agent_management(state: State<AppState>, agent_id: String, enabled: bool) -> Result<AppConfig, String> {
+    {
+        let mut cfg = state.config.lock().unwrap();
+        let mut inventory = state.inventory.lock().unwrap();
+        let inventory = inventory.as_mut().ok_or("请先完成本机扫描")?;
+        agent_policy::set_enabled(&mut cfg, inventory, &agent_id, enabled)?;
     }
+    save_config(&state)?;
+    Ok(state.config.lock().unwrap().clone())
+}
 
-    // 2. 常见非点开头的安装位置
-    let extras = [
-        ("Windsurf", home.join(".codeium").join("windsurf").join("skills")),
-        ("OpenCode", home.join(".config").join("opencode").join("skills")),
-        ("Copilot", home.join(".copilot").join("skills")),
-        ("Factory", home.join(".factory").join("skills")),
-    ];
-    for (name, dir) in extras {
-        if dir.is_dir() {
-            push(name.to_lowercase(), name.to_string(), dir);
-        }
+/// 自定义确认是明确的用户操作；有效程序文件或已存在技能目录至少提供一项。
+#[tauri::command]
+pub fn save_custom_agent(state: State<AppState>, agent: AgentDef, executable_path: String, enabled: bool) -> Result<AppConfig, String> {
+    if agent.id.is_empty() || !agent.id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return Err("ID 只能包含字母、数字、连字符和下划线".into());
     }
-
-    out.sort_by(|a, b| a.name.cmp(&b.name));
-    out
+    if agent.name.trim().is_empty() || !PathBuf::from(&agent.skills_dir).is_absolute() {
+        return Err("请填写名称和绝对技能路径".into());
+    }
+    if !executable_path.is_empty() {
+        if !PathBuf::from(&executable_path).is_absolute() || !PathBuf::from(&executable_path).is_file() {
+            return Err("自定义程序路径必须是已存在的文件".into());
+        }
+    } else if !PathBuf::from(&agent.skills_dir).is_dir()
+        && !state.inventory.lock().unwrap().as_ref().is_some_and(|inventory| inventory.agents.iter().any(|a| a.id==agent.id && a.installed && !a.shared)) {
+        return Err("技能目录尚未存在，请提供本机已安装的程序文件路径".into());
+    }
+    {
+        let mut cfg = state.config.lock().unwrap();
+        let mut agent = agent;
+        agent.builtin = known_agents::name_for(&agent.id).is_some();
+        let id = agent.id.clone();
+        if let Some(existing) = cfg.agents.iter_mut().find(|a| a.id == id) { *existing = agent; }
+        else { cfg.agents.push(agent); }
+        cfg.agent_preferences.insert(id.clone(), AgentPreference { enabled, executable_path, manual_confirmed:true });
+        cfg.agent_configs.entry(id).or_default();
+        // 修改路径后使旧扫描失效，后续写入必须等待新扫描，不能沿用旧路径证据。
+        *state.inventory.lock().unwrap() = None;
+    }
+    save_config(&state)?;
+    Ok(state.config.lock().unwrap().clone())
 }
 
 /// 把 Agent 当前实际链接（整目录链接内 + 独立链接）导入为启用配置
@@ -518,9 +468,7 @@ pub fn import_existing_links(
 ) -> Result<AppConfig, String> {
     {
         let mut cfg = state.config.lock().unwrap();
-        let Some(agent) = find_agent(&cfg, &agent_id) else {
-            return Err(format!("Agent 不存在: {agent_id}"));
-        };
+        let agent = configurable_agent(&cfg, &state, &agent_id)?;
         let keys = deploy::import_existing(agent, &cfg);
         let ac = cfg.agent_configs.entry(agent_id).or_default();
         for k in keys {
@@ -890,12 +838,10 @@ pub async fn ensure_skill_icon(
 
 /// 列出某 Agent skills 目录中的实体技能（非链接）
 #[tauri::command]
-pub fn list_external_skills(state: State<AppState>, agent_id: String) -> Vec<ExternalSkill> {
+pub fn list_external_skills(state: State<AppState>, agent_id: String) -> Result<Vec<ExternalSkill>, String> {
     let cfg = state.config.lock().unwrap();
-    let Some(agent) = find_agent(&cfg, &agent_id) else {
-        return Vec::new();
-    };
-    market::list_external(&agent.skills_dir)
+    let agent = configurable_agent(&cfg, &state, &agent_id)?;
+    Ok(market::list_external(&agent.skills_dir))
 }
 
 /// 收编外部技能：复制进技能库根目录
@@ -906,10 +852,56 @@ pub fn adopt_skill(
     dir_name: String,
 ) -> Result<String, String> {
     let cfg = state.config.lock().unwrap();
-    let Some(agent) = find_agent(&cfg, &agent_id) else {
-        return Err(format!("Agent 不存在: {agent_id}"));
-    };
+    let agent = configurable_agent(&cfg, &state, &agent_id)?;
     market::adopt(&agent.skills_dir, &dir_name, &cfg.skills_root)
+}
+
+// ================= 工具内置技能来源（插件缓存 / IDE 内置技能包）=================
+
+/// 这些目录由对应工具自己写入与升级，本工具只读浏览、按需收编副本，绝不往里做链接部署。
+/// source_id 只能取自内置清单解析出的结果，不接受前端传路径。
+fn builtin_source_dir(source_id: &str) -> Result<String, String> {
+    let bases = agent_bases().ok_or("无法定位用户主目录")?;
+    discovery::source_dir(&bases, source_id)
+        .map(|p| p.to_string_lossy().to_string())
+        .ok_or_else(|| format!("内置技能来源不存在或已被清理: {source_id}"))
+}
+
+/// 本机检测到的内置技能来源
+#[tauri::command]
+pub async fn detect_builtin_sources() -> Result<Vec<DetectedAgent>, String> {
+    let Some(bases) = agent_bases() else {
+        return Ok(Vec::new());
+    };
+    tauri::async_runtime::spawn_blocking(move || discovery::inventory(&bases, &[]).sources.into_iter()
+        .map(|s| DetectedAgent { id: s.id, name: s.name, skills_dir: s.skills_dir, group: s.group }).collect())
+        .await.map_err(|e| format!("内置技能发现失败：{e}"))
+}
+
+/// 某来源里的技能清单（只读）
+#[tauri::command]
+pub async fn builtin_source_skills(source_id: String) -> Result<Vec<ExternalSkill>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = builtin_source_dir(&source_id)?;
+        Ok(discovery::source_skills(std::path::Path::new(&dir)))
+    }).await.map_err(|e| format!("读取内置技能失败：{e}"))?
+}
+
+/// 收编某来源里的一个技能到技能库（原目录不动）
+#[tauri::command]
+pub async fn adopt_builtin_skill(
+    state: State<'_, AppState>,
+    source_id: String,
+    dir_name: String,
+) -> Result<String, String> {
+    let root = state.config.lock().unwrap().skills_root.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = builtin_source_dir(&source_id)?;
+        if !discovery::source_skills(std::path::Path::new(&dir)).iter().any(|s| s.dir_name == dir_name) {
+            return Err("来源中不存在该标准技能".into());
+        }
+        market::adopt(&dir, &dir_name, &root)
+    }).await.map_err(|e| format!("收编技能失败：{e}"))?
 }
 
 // ================= 安全扫描 =================
@@ -937,51 +929,15 @@ pub async fn scan_security_summary(
         .map_err(|e| format!("安全扫描任务异常: {e}"))?
 }
 
-// ================= Doctor 体检 =================
-
-/// 体检扫描（async：要遍历所有 Agent 目录 + 技能库）
-#[tauri::command]
-pub async fn doctor_scan(state: State<'_, AppState>) -> Result<Vec<DoctorIssue>, String> {
-    let cfg = state.config.lock().unwrap().clone();
-    tauri::async_runtime::spawn_blocking(move || Ok(doctor::doctor_scan(&cfg)))
-        .await
-        .map_err(|e| format!("体检任务异常: {e}"))?
-}
-
-/// 执行体检修复（选中的问题 id 列表），修复动作写入审计日志
-#[tauri::command]
-pub fn doctor_fix(state: State<AppState>, ids: Vec<String>) -> Result<DoctorFixResult, String> {
-    let (result, actions) = {
-        let mut cfg = state.config.lock().unwrap();
-        doctor::doctor_fix(&mut cfg, &ids)
-    };
-    if !actions.is_empty() {
-        let mut cfg = state.config.lock().unwrap();
-        push_audit(
-            &mut cfg,
-            AuditEntry {
-                id: format!("{}-doctor", now_ts()),
-                ts: now_ts(),
-                action: "doctor_fix".into(),
-                agent_id: "-".into(),
-                detail: format!(
-                    "体检修复：成功 {} 项，失败 {} 项",
-                    result.fixed, result.failed
-                ),
-                actions,
-            },
-        );
-    }
-    save_config(&state)?;
-    Ok(result)
-}
-
 // ================= Token 上下文预算 =================
 
 /// 各 Agent 启用技能的 token 统计（async：要读每个技能的 SKILL.md，带缓存）
 #[tauri::command]
 pub async fn token_stats(state: State<'_, AppState>) -> Result<Vec<AgentTokenStats>, String> {
-    let cfg = state.config.lock().unwrap().clone();
+    let cfg = {
+        let full = state.config.lock().unwrap();
+        agent_policy::active_config(&full, state.inventory.lock().unwrap().as_ref())
+    };
     tauri::async_runtime::spawn_blocking(move || {
         Ok(cfg
             .agents
@@ -1024,7 +980,9 @@ pub fn import_manifest(
 ) -> Result<ManifestImportResult, String> {
     let r = {
         let mut cfg = state.config.lock().unwrap();
-        let r = manifest::import_manifest(&mut cfg, &path)?;
+        let allowed = agent_policy::active_config(&cfg,state.inventory.lock().unwrap().as_ref()).agents.into_iter().map(|a| a.id).collect();
+        let r = manifest::import_manifest(&mut cfg, &path, &allowed)?;
+        migrate_legacy_agent_paths(&mut cfg.agents);
         push_audit(
             &mut cfg,
             AuditEntry {
@@ -1052,18 +1010,13 @@ pub fn latest_manifest(state: State<AppState>) -> Option<String> {
 /// 在资源管理器中显示某个文件（通用小命令）
 #[tauri::command]
 pub fn reveal_path(path: String) -> Result<(), String> {
-    if !PathBuf::from(&path).exists() {
+    let target = PathBuf::from(&path);
+    if !target.is_absolute() || !target.exists() {
         return Err(format!("路径不存在: {path}"));
     }
-    let out = hidden_command("explorer")
-        .args(["/select,", &path])
-        .output()
-        .map_err(|e| format!("打开资源管理器失败: {e}"))?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        Err("打开资源管理器失败".into())
-    }
+    let mut command = hidden_command("explorer.exe");
+    if !target.is_dir() { command.arg("/select,"); }
+    command.arg(path).spawn().map(|_| ()).map_err(|e| format!("打开资源管理器失败: {e}"))
 }
 
 /// 测试专用的干净临时目录：名字带 pid，避免并发/多进程跑测试时互相踩；
@@ -1081,17 +1034,25 @@ mod tests {
 
     #[test]
     fn default_agents_follow_current_user() {
-        let home = user_home().expect("测试环境应有用户主目录");
-        let home = home.to_string_lossy().to_string();
-        let agents = default_agents();
-        assert!(!agents.is_empty(), "应能构造出内置 Agent 列表");
-        for a in agents.iter().filter(|a| a.id == "claude" || a.id == "codex") {
-            assert!(
-                a.skills_dir.starts_with(&home) && a.skills_dir.ends_with(r"\skills"),
-                "{} 的路径应来自当前主目录: {}",
-                a.id,
-                a.skills_dir
-            );
+        assert!(default_agents().is_empty(), "首次启动必须按检测结果登记，不能虚构已安装 Agent");
+    }
+
+    #[test]
+    fn detected_agent_names_come_from_catalog() {
+        assert_eq!(pretty_agent_name("trae-cn"), "Trae CN");
+        assert_eq!(pretty_agent_name("kilo"), "Kilo Code");
+        assert_eq!(pretty_agent_name("kilocode"), "Kilo Code");
+        assert_eq!(pretty_agent_name("somefreshtool"), "Somefreshtool");
+    }
+
+    #[test]
+    fn catalog_detection_on_this_machine_is_stable() {
+        let Some(bases) = agent_bases() else { return };
+        let once = known_agents::detect_existing(&bases);
+        let twice = known_agents::detect_existing(&bases);
+        assert_eq!(once.len(), twice.len());
+        for h in &once {
+            assert!(h.path.is_dir(), "命中目录应存在: {:?}", h.path);
         }
     }
 
@@ -1099,14 +1060,11 @@ mod tests {
     fn legacy_hardcoded_paths_get_rewritten() {
         let Some(home) = user_home() else { return };
         let home = home.to_string_lossy().to_string();
-        if home.starts_with(LEGACY_HOME) {
-            return; // 作者机器本身就是 C:\Users\admin，改写为恒等
-        }
         let mut agents = vec![
             AgentDef {
                 id: "claude".into(),
                 name: "Claude Code".into(),
-                skills_dir: format!("{}\\.claude\\skills", LEGACY_HOME),
+                skills_dir: r"C:\Users\previous-machine-user\.claude\skills".into(),
                 builtin: true,
             },
             AgentDef {

@@ -17,10 +17,9 @@ import type {
   TrashItem,
   SecurityReport,
   SecuritySummaryItem,
-  DoctorIssue,
-  DoctorFixResult,
   AgentTokenStats,
   ManifestImportResult,
+  MachineInventory,
 } from "../types";
 
 export function getSyncData(): Promise<SyncResult> {
@@ -35,8 +34,14 @@ export function setSkillsRoot(root: string): Promise<AppConfig> {
   return invoke("set_skills_root", { root });
 }
 
-export function saveAgents(agents: AgentDef[]): Promise<AppConfig> {
-  return invoke("save_agents", { agents });
+
+
+export function setAgentManagement(agentId: string, enabled: boolean): Promise<AppConfig> {
+  return invoke("set_agent_management", { agentId, enabled });
+}
+
+export function saveCustomAgent(agent: AgentDef, executablePath: string, enabled: boolean): Promise<AppConfig> {
+  return invoke("save_custom_agent", { agent, executablePath, enabled });
 }
 
 export function toggleSkill(agentId: string, skillKey: string, enabled: boolean): Promise<AppConfig> {
@@ -102,6 +107,10 @@ export function detectAgents(): Promise<DetectedAgent[]> {
   return invoke("detect_agents");
 }
 
+export function refreshDiscovery(): Promise<MachineInventory> {
+  return invoke("refresh_discovery");
+}
+
 // ===== 技能市场 =====
 
 export function marketSources(): Promise<MarketSource[]> {
@@ -145,6 +154,20 @@ export function adoptSkill(agentId: string, dirName: string): Promise<string> {
   return invoke("adopt_skill", { agentId, dirName });
 }
 
+// ===== 工具内置技能来源（只读）=====
+
+export function detectBuiltinSources(): Promise<DetectedAgent[]> {
+  return invoke("detect_builtin_sources");
+}
+
+export function builtinSourceSkills(sourceId: string): Promise<ExternalSkill[]> {
+  return invoke("builtin_source_skills", { sourceId });
+}
+
+export function adoptBuiltinSkill(sourceId: string, dirName: string): Promise<string> {
+  return invoke("adopt_builtin_skill", { sourceId, dirName });
+}
+
 // ===== 安全扫描 =====
 
 export function scanSkillSecurity(key: string): Promise<SecurityReport> {
@@ -153,16 +176,6 @@ export function scanSkillSecurity(key: string): Promise<SecurityReport> {
 
 export function scanSecuritySummary(): Promise<SecuritySummaryItem[]> {
   return invoke("scan_security_summary");
-}
-
-// ===== Doctor 体检 =====
-
-export function doctorScan(): Promise<DoctorIssue[]> {
-  return invoke("doctor_scan");
-}
-
-export function doctorFix(ids: string[]): Promise<DoctorFixResult> {
-  return invoke("doctor_fix", { ids });
 }
 
 // ===== Token 上下文预算 =====

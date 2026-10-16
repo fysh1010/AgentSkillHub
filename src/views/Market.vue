@@ -14,6 +14,7 @@ import {
 } from "../api/tauri";
 import type { MarketSource, MarketSkill, SecurityReport } from "../types";
 import { useEsc } from "../composables/useEsc";
+import SkillGlyph from "../components/SkillGlyph.vue";
 
 // Esc 关闭「安装后启用」弹窗（部署进行中不响应，避免误关）
 useEsc(() => {
@@ -349,67 +350,12 @@ function fmtDate(ts: number): string {
 
 // ---------- 图标 / 美化工具 ----------
 
-const ICON_EMOJI: Array<[RegExp, string]> = [
-  [/pdf|document|file|doc/i, "📄"],
-  [/image|photo|camera|picture|screenshot|thumbnail/i, "🖼️"],
-  [/video|film|clapper|ffmpeg|youtube|bilibili|subtitle/i, "🎬"],
-  [/audio|music|mic|speaker|voice|tts|podcast/i, "🎵"],
-  [/search|lookup|find|fetch|scrape|crawl/i, "🔍"],
-  [/chart|dashboard|analytics|data|excel|csv|table|sql|database|report/i, "📊"],
-  [/word|office|docx|text|write|writing|draft/i, "✍️"],
-  [/slide|ppt|present|deck/i, "📽️"],
-  [/mail|email|gmail|outlook/i, "📧"],
-  [/chat|message|whatsapp|telegram|slack|discord|im\b/i, "💬"],
-  [/calendar|schedule|meeting|appointment|remind/i, "📅"],
-  [/web|browser|chrome|html|http|url|link/i, "🌐"],
-  [/github|git\b|branch|repo|clawhub|hub/i, "🐙"],
-  [/code|terminal|bash|shell|python|node|rust|cpp|api|sdk/i, "💻"],
-  [/robot|agent|llm|ai\b|gpt|claude|model|prompt/i, "🤖"],
-  [/cloud|deploy|aws|azure|server|network/i, "☁️"],
-  [/security|privacy|auth|password|token|lock|shield/i, "🛡️"],
-  [/book|learn|study|course|tutorial|read/i, "📚"],
-  [/translate|language|locale|i18n|cn\b|zh\b/i, "🌏"],
-  [/design|ui\b|ux\b|figma|color|font|style|brand/i, "🎨"],
-  [/math|calc|formula|equation|number|stat/i, "🧮"],
-  [/travel|map|location|weather|flight|hotel/i, "🗺️"],
-  [/shop|ecommerce|amazon|taobao|jd\b|order|price/i, "🛒"],
-  [/video|short|tiktok|douyin|xiaohongshu|weibo|bilibili/i, "🎬"],
-  [/media|mp3|convert|compress|extract/i, "🧰"],
-  [/game|unity|unreal|play/i, "🎮"],
-];
-
-function iconEmoji(s: MarketSkill): string {
-  const hay = `${s.icon} ${s.name} ${s.display_name}`;
-  for (const [re, emoji] of ICON_EMOJI) {
-    if (re.test(hay)) return emoji;
-  }
-  return "🧩";
-}
-
-const GRADS = [
-  "linear-gradient(135deg,#7c5cff,#b16cff)",
-  "linear-gradient(135deg,#ff6b9d,#ff9a76)",
-  "linear-gradient(135deg,#00b8d9,#3ddc97)",
-  "linear-gradient(135deg,#f59e0b,#ef4444)",
-  "linear-gradient(135deg,#06b6d4,#3b82f6)",
-  "linear-gradient(135deg,#8b5cf6,#ec4899)",
-  "linear-gradient(135deg,#10b981,#84cc16)",
-  "linear-gradient(135deg,#f97316,#f43f5e)",
-];
-
-function iconStyle(s: MarketSkill): Record<string, string> {
-  let idx = 0;
-  const key = `${s.name}${s.display_name}`;
-  for (const ch of key) idx = (idx + ch.charCodeAt(0)) % 997;
-  return { background: GRADS[idx % GRADS.length] };
-}
-
-/// 官方图优先级：技能官方图标（腾讯源）→ 作者头像（ClawHub / GitHub）→ emoji 兜底
+// 官方图标优先级：技能官方图标 → 作者头像 → 统一线性图标。
 function officialImg(s: MarketSkill): string {
   return s.icon_url || s.owner_image || "";
 }
 
-/// 图片加载失败时逐级降级：官方图标 → 作者头像 → emoji
+/// 图片加载失败时逐级降级：官方图标 → 作者头像 → 线性图标
 function onImgError(s: MarketSkill) {
   if (s.icon_url) {
     s.icon_url = "";
@@ -598,7 +544,6 @@ onMounted(loadSources);
           <div
             class="mk-icon"
             :class="{ 'has-img': officialImg(s) }"
-            :style="officialImg(s) ? undefined : iconStyle(s)"
           >
             <img
               v-if="officialImg(s)"
@@ -609,7 +554,7 @@ onMounted(loadSources);
               referrerpolicy="no-referrer"
               @error="onImgError(s)"
             />
-            <template v-else>{{ iconEmoji(s) }}</template>
+            <SkillGlyph v-else :label="s.name + ' ' + s.display_name" />
           </div>
           <div class="mk-title">
             <div class="mk-name-row">
@@ -778,7 +723,7 @@ onMounted(loadSources);
   align-items: center;
   gap: 6px;
   padding: 6px 14px;
-  border-radius: 20px;
+  border-radius: 6px;
   border: 1px solid var(--border);
   background: var(--panel);
   color: var(--muted);
@@ -911,10 +856,10 @@ onMounted(loadSources);
 }
 .mk:hover {
   box-shadow: var(--shadow);
-  transform: translateY(-2px);
+  border-color: var(--accent);
 }
 .mk.featured {
-  border-color: rgba(250, 204, 21, 0.45);
+  border-color: var(--border);
 }
 
 .mk-head {
@@ -925,14 +870,16 @@ onMounted(loadSources);
 .mk-icon {
   width: 44px;
   height: 44px;
-  border-radius: 12px;
+  border-radius: 9px;
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 22px;
-  color: #fff;
+  color: var(--muted);
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
   flex-shrink: 0;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+  box-shadow: none;
 }
 /* 展示官方原图时：白底、去投影，避免自绘风格干扰官方视觉 */
 .mk-icon.has-img {
@@ -947,6 +894,7 @@ onMounted(loadSources);
   object-fit: contain;
   display: block;
 }
+.mk-icon :deep(svg) { width:21px; height:21px; }
 .mk-title {
   min-width: 0;
   flex: 1;

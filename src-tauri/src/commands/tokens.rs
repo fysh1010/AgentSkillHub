@@ -68,7 +68,7 @@ pub fn agent_token_stats(agent: &AgentDef, cfg: &AppConfig) -> AgentTokenStats {
     let mut skills: Vec<SkillTokens> = Vec::new();
     for key in &enabled {
         let Some(path) = crate::commands::scan::resolve_skill_target(&cfg.skills_root, key) else {
-            continue; // 失效技能不计入（Doctor 页会报）
+            continue; // 失效技能不计入
         };
         let (resident, body) = skill_tokens(&path);
         let display = crate::commands::scan::read_skill_md_pub(&path.join("SKILL.md"));

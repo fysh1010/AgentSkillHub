@@ -26,7 +26,11 @@ fn ts_to_filename(ts: u64) -> String {
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if m <= 2 { y + 1 } else { y };
-    let (h, mi, s) = (secs_of_day / 3600, secs_of_day % 3600 / 60, secs_of_day % 60);
+    let (h, mi, s) = (
+        secs_of_day / 3600,
+        secs_of_day % 3600 / 60,
+        secs_of_day % 60,
+    );
     format!("{y:04}{m:02}{d:02}-{h:02}{mi:02}{s:02}")
 }
 
@@ -58,10 +62,15 @@ pub fn write_manifest(cfg: &AppConfig, app_version: &str) -> Result<String, Stri
 /// - agent_configs 按 agent id 整体覆盖（清单是分配关系快照，覆盖幂等且能还原"取消分配"）
 /// - skill_meta 按 key 并入覆盖
 /// - skills_root 不覆盖（机器相关，仅作信息记录）
-pub fn import_manifest(cfg: &mut AppConfig, path: &str) -> Result<ManifestImportResult, String> {
+pub fn import_manifest(
+    cfg: &mut AppConfig,
+    path: &str,
+    allowed: &std::collections::HashSet<String>,
+) -> Result<ManifestImportResult, String> {
     let content = fs::read_to_string(path).map_err(|e| format!("读取清单失败: {e}"))?;
     // 先校验版本，给用户明确的兼容性提示
-    let v: serde_json::Value = serde_json::from_str(&content).map_err(|e| format!("清单不是合法 JSON: {e}"))?;
+    let v: serde_json::Value =
+        serde_json::from_str(&content).map_err(|e| format!("清单不是合法 JSON: {e}"))?;
     let ver = v
         .get("manifest_version")
         .and_then(|x| x.as_u64())
@@ -78,13 +87,22 @@ pub fn import_manifest(cfg: &mut AppConfig, path: &str) -> Result<ManifestImport
     for a in &manifest.agents {
         if !cfg.agents.iter().any(|x| x.id == a.id) {
             cfg.agents.push(a.clone());
+            cfg.agent_preferences.entry(a.id.clone()).or_default();
             cfg.agent_configs.entry(a.id.clone()).or_default();
         }
     }
     // 分配关系整体覆盖（仅覆盖清单里出现过的 agent）
     let mut overwritten = 0usize;
     for (id, ac) in &manifest.agent_configs {
-        if cfg.agent_configs.get(id).map(|c| c.enabled_skills != ac.enabled_skills).unwrap_or(true) {
+        if !allowed.contains(id) || !crate::commands::agent_policy::enabled(cfg, id) {
+            continue;
+        }
+        if cfg
+            .agent_configs
+            .get(id)
+            .map(|c| c.enabled_skills != ac.enabled_skills)
+            .unwrap_or(true)
+        {
             overwritten += 1;
         }
         cfg.agent_configs.insert(id.clone(), ac.clone());
@@ -142,7 +160,12 @@ mod tests {
     fn sample_cfg(root: &str) -> AppConfig {
         let mut cfg = AppConfig::default();
         cfg.skills_root = root.into();
-        cfg.agents.push(AgentDef { id: "claude".into(), name: "Claude Code".into(), skills_dir: r"C:\x\skills".into(), builtin: true });
+        cfg.agents.push(AgentDef {
+            id: "claude".into(),
+            name: "Claude Code".into(),
+            skills_dir: r"C:\x\skills".into(),
+            builtin: true,
+        });
         let mut ac = AgentConfig::default();
         ac.enabled_skills = vec!["a".into(), "b".into()];
         cfg.agent_configs.insert("claude".into(), ac);
@@ -163,14 +186,27 @@ mod tests {
 
         // 本地状态被改过：a 被取消、多了 c 和多余 agent
         let mut local = sample_cfg(&root);
-        local.agent_configs.get_mut("claude").unwrap().enabled_skills = vec!["c".into()];
-        local.agents.push(AgentDef { id: "extra".into(), name: "X".into(), skills_dir: r"C:\y".into(), builtin: false });
+        local
+            .agent_configs
+            .get_mut("claude")
+            .unwrap()
+            .enabled_skills = vec!["c".into()];
+        local.agents.push(AgentDef {
+            id: "extra".into(),
+            name: "X".into(),
+            skills_dir: r"C:\y".into(),
+            builtin: false,
+        });
         local.skill_meta.clear();
 
-        let r = import_manifest(&mut local, &path).unwrap();
+        let r =
+            import_manifest(&mut local, &path, &["claude".into()].into_iter().collect()).unwrap();
         assert!(r.ok);
         // 覆盖语义：分配被还原为 a,b
-        assert_eq!(local.agent_configs["claude"].enabled_skills, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(
+            local.agent_configs["claude"].enabled_skills,
+            vec!["a".to_string(), "b".to_string()]
+        );
         // 本地多余的 agent 不被删除（只增不改）
         assert!(local.agents.iter().any(|a| a.id == "extra"));
         // 收藏并入
@@ -183,12 +219,35 @@ mod tests {
     }
 
     #[test]
+    fn import_preserves_closed_agents_and_never_enables_new_tools() {
+        let dir = tmp("closed");
+        let cfg = sample_cfg(&dir.to_string_lossy());
+        let path = write_manifest(&cfg, "0.2.1").unwrap();
+        let mut local = cfg.clone();
+        local
+            .agent_configs
+            .get_mut("claude")
+            .unwrap()
+            .enabled_skills = vec!["preserved".into()];
+        local.agent_preferences.entry("claude".into()).or_default();
+        import_manifest(&mut local, &path, &["claude".into()].into_iter().collect()).unwrap();
+        assert_eq!(local.agent_configs["claude"].enabled_skills, ["preserved"]);
+        local.agents.clear();
+        local.agent_configs.clear();
+        local.agent_preferences.clear();
+        import_manifest(&mut local, &path, &Default::default()).unwrap();
+        assert!(!crate::commands::agent_policy::enabled(&local, "claude"));
+        assert!(local.agent_configs["claude"].enabled_skills.is_empty());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn rejects_bad_version() {
         let dir = tmp("ver");
         let p = dir.join("m.json");
         fs::write(&p, r#"{"manifest_version": 2}"#).unwrap();
         let mut cfg = sample_cfg(&dir.to_string_lossy());
-        let err = import_manifest(&mut cfg, &p.to_string_lossy()).unwrap_err();
+        let err = import_manifest(&mut cfg, &p.to_string_lossy(), &Default::default()).unwrap_err();
         assert!(err.contains("版本不兼容"), "got: {err}");
         let _ = fs::remove_dir_all(&dir);
     }
@@ -201,7 +260,10 @@ mod tests {
         fs::write(dir.join("other.json"), "{}").unwrap();
         let got = latest_manifest_path(&dir.to_string_lossy()).unwrap();
         assert!(got.contains("20260901-120000"), "got: {got}");
-        assert_eq!(latest_manifest_path(&dir.join("nonexist").to_string_lossy()), None);
+        assert_eq!(
+            latest_manifest_path(&dir.join("nonexist").to_string_lossy()),
+            None
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

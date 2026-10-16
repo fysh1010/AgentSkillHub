@@ -1,9 +1,10 @@
 {
   "name": "agentskillhub",
   "private": true,
-  "version": "0.2.1",
+  "version": "0.3.0",
   "type": "module",
   "scripts": {
+    "icons": "node scripts/generate-icons.mjs",
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",

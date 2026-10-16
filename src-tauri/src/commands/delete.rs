@@ -200,7 +200,13 @@ pub fn force_clear_for_update(root: &str, key: &str) -> Result<(), String> {
 }
 
 /// 删除技能库中的一个技能（含链接与配置清理），成功后移入回收站
+#[cfg(test)]
 pub fn delete_skill(cfg: &mut AppConfig, key: &str) -> Result<DeleteResult, String> {
+    let allowed=cfg.agents.iter().filter(|a| super::agent_policy::enabled(cfg,&a.id)).map(|a| a.id.clone()).collect();
+    delete_skill_with_access(cfg,key,&allowed)
+}
+
+pub fn delete_skill_with_access(cfg: &mut AppConfig, key: &str, allowed: &std::collections::HashSet<String>) -> Result<DeleteResult, String> {
     let root = cfg.skills_root.clone();
     if root.trim().is_empty() {
         return Err("技能库路径未设置".into());
@@ -228,7 +234,16 @@ pub fn delete_skill(cfg: &mut AppConfig, key: &str) -> Result<DeleteResult, Stri
         ));
     }
 
-    let agents = cfg.agents.clone();
+    // 关闭管理后不再触碰其链接和分配。删除共享源也会影响这些工具，因此在任何写入之前拒绝。
+    for a in cfg.agents.iter().filter(|a| !allowed.contains(&a.id)) {
+        let assigned=cfg.agent_configs.get(&a.id).is_some_and(|ac| ac.enabled_skills.iter().any(|k|
+            k==key || resolve_skill_target(&root,k).is_some_and(|p| same_path(&p,&target))));
+        let dir=Path::new(&a.skills_dir);
+        let parent_uses_root=is_junction(dir) && junction_target(dir).is_some_and(|p| same_path(&p,Path::new(&root)) || within_root(&p.to_string_lossy(),&target));
+        let linked=fs::read_dir(dir).into_iter().flatten().flatten().any(|e| is_junction(&e.path()) && junction_target(&e.path()).is_some_and(|p| same_path(&p,&target)));
+        if assigned || parent_uses_root || linked { return Err(format!("{} 尚未允许配置且仍使用此技能，请先在设置中开启后处理其分配和链接",a.name)); }
+    }
+    let agents:Vec<_> = cfg.agents.iter().filter(|a| allowed.contains(&a.id)).cloned().collect();
     let mut removed_links: Vec<DeployAction> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
 
@@ -268,6 +283,7 @@ pub fn delete_skill(cfg: &mut AppConfig, key: &str) -> Result<DeleteResult, Stri
     // 2) 从各 Agent 配置里摘除该技能（按解析后的真实路径精确匹配，避免同名误删）
     let mut unassigned_agents: Vec<String> = Vec::new();
     for (agent_id, ac) in cfg.agent_configs.iter_mut() {
+        if !allowed.contains(agent_id) { continue; }
         let before = ac.enabled_skills.len();
         ac.enabled_skills.retain(|k| match resolve_skill_target(&root, k) {
             Some(p) => !same_path(&p, &target),
@@ -364,6 +380,7 @@ mod tests {
             market_sources: Vec::new(),
             skill_meta: std::collections::HashMap::new(),
             token_budget: 8000,
+            agent_preferences: HashMap::new(),
         }
     }
 
@@ -409,6 +426,24 @@ mod tests {
         let mut cfg = base_cfg(&tmp, &tmp.join("agent"));
         assert!(delete_skill(&mut cfg, "nope").is_err());
         let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn closed_agent_keeps_link_assignment_and_shared_source() {
+        let tmp=crate::commands::test_scratch("delete_closed");
+        let root=tmp.join("lib"); let agent=tmp.join("agent");
+        fs::create_dir_all(&root).unwrap(); fs::create_dir_all(&agent).unwrap();
+        write_skill(&root,"alpha"); write_skill(&root,"beta");
+        crate::commands::deploy::create_junction(&agent.join("alpha"),&root.join("alpha")).unwrap();
+        let mut cfg=base_cfg(&root,&agent);
+        cfg.agent_preferences.entry("test".into()).or_default();
+        let error=delete_skill(&mut cfg,"alpha").unwrap_err();
+        assert!(error.contains("尚未允许配置"));
+        assert!(root.join("alpha/SKILL.md").is_file());
+        assert!(is_junction(&agent.join("alpha")));
+        assert_eq!(cfg.agent_configs["test"].enabled_skills,["alpha","beta"]);
+        let _=crate::commands::deploy::remove_junction(&agent.join("alpha"));
+        let _=fs::remove_dir_all(tmp);
     }
 
     /// 校验前置逻辑：链接清理 + 配置摘除（不触发回收站，改用 junction 分支）

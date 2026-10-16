@@ -38,7 +38,7 @@ Claude Code、Codex 等 AI 工具会读取各自 `skills` 目录下的这些文�
 
 AgentSkillHub 的核心设计：
 
-- **技能库**（默认 `E:\my-skills`）是所有技能的唯一真实存放地；
+- **技能库**（默认当前用户目录下的 `AgentSkillHub/skills`）是所有技能的唯一真实存放地；
 - 给某个 Agent 配置技能 X = 在该 Agent 的 skills 目录创建一个指向技能库的 **Junction 链接**（`mklink /J`，Windows 目录联接，不需要管理员权限）；
 - Junction 对程序完全透明：AI 工具读 `skills/xxx` 就等于读技能库里的 `xxx`；
 - 因此：**改一处，所有配置了该技能的工具即时生效；删除链接，源文件毫发无损**。
@@ -74,8 +74,8 @@ C:\Users\…\.zcode\skills\gh-cli
 ## 2. 首次配置
 
 1. 启动应用，进入 **设置** 页；
-2. **技能库根目录**：默认 `E:\my-skills`，可改成任意本地路径（建议独立分区/目录，便于 Git 备份）；
-3. **Agent 列表**：内置 6 个（Claude Code / OpenAI Codex / Zcode / WorkBuddy / Agents / 豆包），路径不对的直接改；有新工具点「自动检测」一键注册；
+2. **技能库根目录**：默认当前用户目录下的 `AgentSkillHub/skills`，可改成任意本地路径（建议独立分区/目录，便于 Git 备份）；
+3. **Agent 工具**：默认只显示本机已确认安装的产品；开启对应的「允许配置」后，才会出现在 Agent 配置与技能分配中。未安装规则和残留配置归入另一列表，新工具支持自定义。
 4. 完成。技能库目录里已有的技能会被自动扫描出来。
 
 > 技能目录结构：技能直接平铺在根目录（`E:\my-skills\技能名\`）。
@@ -184,7 +184,16 @@ C:\Users\…\.zcode\skills\gh-cli
 ## 8. 设置页
 
 - **技能库根目录**：随时可改，改完自动重扫；
-- **Agent 管理**：新增 / 编辑路径 / 删除；「自动检测」扫描用户目录下常见工具的 skills 目录（支持识别重定向到其他盘的 Junction）；
+- **Agent 工具**：按安装证据展示已安装列表，提供「允许配置」开关、自定义添加与路径编辑；未安装 / 待确认列表独立展示，内置产品规则覆盖
+  （Claude Code、OpenAI Codex、Cursor、Windsurf、Gemini CLI、Google Antigravity、GitHub Copilot、
+  Qoder / Qoder CN、Trae / Trae CN、通义灵码、通义 Qwen Code、腾讯 CodeBuddy、豆包、MiniMax Code、
+  Kimi Code、iFlow CLI、Zcode、CodeArts Agent、OpenCode、Roo Code、Kilo Code、Kiro CLI、Continue、
+  Augment、Goose、Crush、Devin、Tabnine、Junie、AiderDesk、OpenHands…），
+  含非点开头路径（`~\.codeium\windsurf\skills`、`~\.config\opencode\skills`）与按账号分目录的产品；
+  清单没收录的新工具仍由通用 `~\.xxx\skills` 扫描兜底（支持识别重定向到其他盘的 Junction）；
+- **内置技能**：设置中的独立标签，展示各家插件缓存 / IDE 内置包的来源位置和技能清单，可打开目录或复制到技能库。
+  （Qoder CN 插件、Claude Code 插件、Trae CN 内置包、豆包等）。展开后逐个「收编」= 把副本复制进技能库，
+  原目录不动、也不会往这些目录里做任何链接；已在技能库的同名技能会直接标「已在技能库」并禁用按钮；
 - **技能库 Git 备份**：填一句快照说明 →「立即备份快照」（`git add -A + commit`，目录没有 `.git` 时自动 `git init`）。删错/改坏技能后可 `git checkout` 回任意快照。
 
 ---
@@ -193,7 +202,7 @@ C:\Users\…\.zcode\skills\gh-cli
 
 | 数据 | 位置 |
 |---|---|
-| 技能源文件 | 技能库目录（默认 `E:\my-skills\<技能名>\`） |
+| 技能源文件 | 技能库目录（默认 `%USERPROFILE%\AgentSkillHub\skills\<技能名>\`） |
 | 应用配置（Agent 列表/勾选/审计/收藏标签/市场源） | `%APPDATA%\com.agentskillhub.app\config.json` |
 | 翻译缓存 | `%APPDATA%\com.agentskillhub.app\translations.json` |
 | 应用内回收站 | `技能库\_archive\trash\` |

@@ -1,22 +1,15 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
-import { store, loadAll, toast } from "../store";
-import {
-  setSkillsRoot,
-  saveAgents,
-  detectAgents,
-  gitBackup,
-  setTokenBudget,
-  exportManifest,
-  importManifest,
-  latestManifest,
-  revealPath,
-} from "../api/tauri";
-import type { AgentDef, DetectedAgent } from "../types";
+import { onMounted, ref, watch } from "vue";
+import { store, loadAll, toast, ui } from "../store";
+import { setSkillsRoot, gitBackup, setTokenBudget, exportManifest, importManifest, latestManifest } from "../api/tauri";
+import AgentManager from "../components/AgentManager.vue";
+import BuiltinSkills from "../components/BuiltinSkills.vue";
 import pkg from "../../package.json";
-
-// ---------- Git 备份 ----------
-
+const tabs = [{id:"agents",name:"Agent 工具"},{id:"builtin",name:"内置技能"},{id:"general",name:"通用设置"},{id:"data",name:"数据与备份"}];
+const root = ref(store.config?.skills_root || "");
+watch(() => store.config?.skills_root, (value, previous) => {
+  if (!root.value || root.value === previous) root.value = value || "";
+});
 const backing = ref(false);
 const backupMsg = ref("");
 const backupMsgOut = ref("");
@@ -39,42 +32,6 @@ async function doBackup() {
   }
 }
 
-const root = ref(store.config?.skills_root || "");
-const editing = ref(false);
-const saveMsg = ref("");
-const newAgent = ref<AgentDef>({ id: "", name: "", skills_dir: "", builtin: false });
-const adding = ref(false);
-const detected = ref<DetectedAgent[]>([]);
-
-async function loadDetected() {
-  try {
-    detected.value = await detectAgents();
-  } catch {
-    detected.value = [];
-  }
-}
-
-async function addDetected(d: DetectedAgent) {
-  const list = store.config?.agents;
-  if (!list) return;
-  if (list.some((a) => a.id === d.id)) {
-    toast(`Agent ID "${d.id}" 已存在`, "error");
-    return;
-  }
-  list.push({ id: d.id, name: d.name, skills_dir: d.skills_dir, builtin: false });
-  try {
-    await saveAgents(list.map((a) => ({ ...a })));
-    await loadAll();
-    toast(`已添加 ${d.name}`, "success");
-    await loadDetected();
-  } catch (e) {
-    toast(String(e), "error");
-  }
-}
-
-onMounted(loadDetected);
-onMounted(loadLatestManifest);
-
 async function saveRoot() {
   if (!root.value.trim()) {
     toast("技能库目录不能为空", "error");
@@ -88,21 +45,6 @@ async function saveRoot() {
     toast(String(e), "error");
   }
 }
-
-async function doSaveAgents() {
-  try {
-    const list = store.config?.agents || [];
-    await saveAgents(list.map((a) => ({ ...a })));
-    await loadAll();
-    editing.value = false;
-    saveMsg.value = "Agent 列表已保存";
-    toast("Agent 列表已保存", "success");
-  } catch (e) {
-    toast(String(e), "error");
-  }
-}
-
-// ---------- 上下文预算 ----------
 
 const budget = ref<number>(store.config?.token_budget || 8000);
 
@@ -126,8 +68,12 @@ const exportMsg = ref("");
 const manifestPath = ref("");
 const importMsg = ref("");
 const missingSkills = ref(0);
+const exporting = ref(false);
+const importing = ref(false);
 
 async function doExport() {
+  if (exporting.value) return;
+  exporting.value = true;
   exportMsg.value = "";
   try {
     const path = await exportManifest();
@@ -136,16 +82,18 @@ async function doExport() {
   } catch (e) {
     toast(String(e), "error");
     exportMsg.value = String(e);
-  }
+  } finally { exporting.value = false; }
 }
 
 async function doImport() {
+  if (importing.value) return;
   if (!manifestPath.value.trim()) {
     toast("请输入清单文件路径", "error");
     return;
   }
-  if (!confirm("导入清单将覆盖当前各 Agent 的技能分配关系，是否继续？")) return;
+  if (!confirm("导入清单将覆盖已允许配置的 Agent 的技能分配关系，是否继续？")) return;
   importMsg.value = "";
+  importing.value = true;
   try {
     const r = await importManifest(manifestPath.value.trim());
     if (r.ok) {
@@ -159,7 +107,7 @@ async function doImport() {
   } catch (e) {
     toast(String(e), "error");
     importMsg.value = `❌ ${e}`;
-  }
+  } finally { importing.value = false; }
 }
 
 async function loadLatestManifest() {
@@ -169,59 +117,15 @@ async function loadLatestManifest() {
   } catch { /* 无清单是正常情况 */ }
 }
 
-function openManifestFolder(path: string) {
-  revealPath(path).catch(() => {});
-}
-
-function updateAgentField(idx: number, field: keyof AgentDef, val: string | boolean) {
-  const list = store.config?.agents;
-  if (!list) return;
-  list[idx] = { ...list[idx], [field]: val };
-}
-
-function removeAgent(idx: number) {
-  const list = store.config?.agents;
-  if (!list) return;
-  list.splice(idx, 1);
-}
-
-function addAgent() {
-  if (!newAgent.value.id.trim() || !newAgent.value.skills_dir.trim()) {
-    toast("ID 与目录必填", "error");
-    return;
-  }
-  const list = store.config?.agents;
-  if (!list) return;
-  if (list.some((a) => a.id === newAgent.value.id.trim())) {
-    toast("Agent ID 已存在", "error");
-    return;
-  }
-  list.push({
-    id: newAgent.value.id.trim(),
-    name: newAgent.value.name.trim() || newAgent.value.id.trim(),
-    skills_dir: newAgent.value.skills_dir.trim(),
-    builtin: false,
-  });
-  newAgent.value = { id: "", name: "", skills_dir: "", builtin: false };
-  adding.value = false;
-}
-
-function suggestId() {
-  if (!newAgent.value.id && newAgent.value.name) {
-    newAgent.value.id = newAgent.value.name.trim().toLowerCase().replace(/\s+/g, "-");
-  }
-}
+onMounted(loadLatestManifest);
 </script>
-
 <template>
   <div class="settings">
-    <header class="page-head">
-      <div>
-        <h1>设置</h1>
-        <p class="sub">技能库根目录与 AI Agent 工具的注册管理</p>
-      </div>
-    </header>
-
+    <header class="page-head"><div><h1>设置</h1><p class="sub">发现本机工具，决定哪些 Agent 可以由这里管理。</p></div></header>
+    <nav class="settings-tabs" aria-label="设置分类"><button v-for="tab in tabs" :key="tab.id" :class="{active:ui.settingsTab === tab.id}" @click="ui.settingsTab = tab.id">{{ tab.name }}</button></nav>
+    <AgentManager v-if="ui.settingsTab === 'agents'" />
+    <BuiltinSkills v-else-if="ui.settingsTab === 'builtin'" />
+    <div v-else-if="ui.settingsTab === 'general'" class="settings-section">
     <!-- 技能库 -->
     <section class="card block">
       <div class="block-head">
@@ -230,70 +134,10 @@ function suggestId() {
       </div>
       <p class="block-desc">所有技能的存放根目录。工具从这里扫描 SKILL.md，并按此目录部署链接。</p>
       <div class="row">
-        <input v-model="root" class="input" placeholder="例如 E:\my-skills" />
+        <input v-model="root" class="input" placeholder="技能库的绝对路径，默认跟随当前用户目录" />
         <button class="btn primary" @click="saveRoot()">保存并重新扫描</button>
       </div>
       <div class="hint">当前技能数：{{ store.skills.length }} ｜ 技能库：{{ store.config?.skills_root }}</div>
-    </section>
-
-    <!-- Agent 列表 -->
-    <section class="card block">
-      <div class="block-head">
-        <h3>AI Agent 工具</h3>
-        <div style="display: flex; gap: 8px">
-          <button class="btn" @click="adding = !adding">{{ adding ? "取消" : "新增" }}</button>
-          <button class="btn primary" @click="doSaveAgents()">保存变更</button>
-        </div>
-      </div>
-      <p class="block-desc">管理每个 AI Agent 的 skills 目录。内置工具可修改路径，也可以添加你自己的 Agent。</p>
-
-      <div v-if="adding" class="new-agent">
-        <input v-model="newAgent.name" class="input" placeholder="名称（如 Trae）" @input="suggestId()" />
-        <input v-model="newAgent.id" class="input" placeholder="ID（唯一，如 trae）" />
-        <input v-model="newAgent.skills_dir" class="input wide" placeholder="skills 目录绝对路径" />
-        <button class="btn primary" @click="addAgent()">添加</button>
-      </div>
-
-      <div class="agent-table">
-        <div class="at-row at-head">
-          <span>名称</span>
-          <span>ID</span>
-          <span>skills 目录</span>
-          <span>来源</span>
-          <span></span>
-        </div>
-        <div v-for="(a, i) in store.config?.agents || []" :key="a.id + i" class="at-row">
-          <input class="input" :value="a.name" @input="updateAgentField(i, 'name', ($event.target as HTMLInputElement).value)" />
-          <code class="at-id">{{ a.id }}</code>
-          <input class="input" :value="a.skills_dir" @input="updateAgentField(i, 'skills_dir', ($event.target as HTMLInputElement).value)" />
-          <span class="badge" :class="a.builtin ? 'blue' : 'gray'">{{ a.builtin ? "内置" : "自定义" }}</span>
-          <button class="btn danger" style="padding: 4px 10px" @click="removeAgent(i)" :disabled="a.builtin && (store.config?.agents.length || 0) <= 1">
-            删除
-          </button>
-        </div>
-      </div>
-      <div v-if="saveMsg" class="hint green">{{ saveMsg }}</div>
-    </section>
-
-    <!-- 自动检测 -->
-    <section class="card block">
-      <div class="block-head">
-        <h3>检测到的未注册 Agent</h3>
-        <button class="btn" @click="loadDetected()">重新检测</button>
-      </div>
-      <p class="block-desc">
-        自动扫描用户目录下已存在的 skills 目录（含重定向到其他盘的 Junction，按最终路径识别）。点击即可一键注册。
-      </p>
-      <div v-if="detected.length" class="detected-list">
-        <div v-for="d in detected" :key="d.id" class="detected-item">
-          <div class="d-info">
-            <b>{{ d.name }}</b>
-            <code :title="d.skills_dir">{{ d.skills_dir }}</code>
-          </div>
-          <button class="btn primary" @click="addDetected(d)">一键添加</button>
-        </div>
-      </div>
-      <div v-else class="hint">未检测到新的 Agent 工具 —— 已注册的不会重复出现。</div>
     </section>
 
     <!-- 上下文预算 -->
@@ -321,6 +165,8 @@ function suggestId() {
       </div>
     </section>
 
+<section class="card block"><h3>关于 AgentSkillHub</h3><p class="block-desc">v{{ pkg.version }} · 本地技能管理。路径跟随当前用户，统一使用黑白或蓝白配色。</p></section>
+    </div><div v-else class="settings-section">
     <!-- Git 备份 -->
     <section class="card block">
       <div class="block-head">
@@ -347,152 +193,26 @@ function suggestId() {
       <div class="block-head">
         <h3>环境清单</h3>
         <div style="display: flex; gap: 8px">
-          <button class="btn primary" :disabled="!!exportMsg" @click="doExport">导出清单</button>
+          <button class="btn primary" :disabled="exporting" @click="doExport">导出清单</button>
         </div>
       </div>
       <p class="block-desc">
         把当前「技能库配置 + Agent 分配 + 收藏标签」导出为 JSON 清单，可在新机器或重装后一键恢复。
-        不含技能文件内容与审计日志；导入按 Agent 覆盖分配关系。
+        不含技能文件内容与审计日志；导入只覆盖已允许配置的 Agent；新工具需在本机确认并开启。
       </p>
       <div v-if="exportMsg" class="hint" :class="exportMsg.startsWith('✅') ? 'green' : ''" style="word-break: break-all">{{ exportMsg }}</div>
       <div class="row" style="margin-top: 12px">
         <input v-model="manifestPath" class="input" placeholder="清单文件路径" />
-        <button class="btn" :disabled="!!importMsg" @click="loadLatestManifest()">探测最新</button>
-        <button class="btn primary" :disabled="!!importMsg" @click="doImport()">校验并导入</button>
+        <button class="btn"  @click="loadLatestManifest()">探测最新</button>
+        <button class="btn primary" :disabled="importing" @click="doImport()">校验并导入</button>
       </div>
       <div v-if="importMsg" class="hint" :class="importMsg.startsWith('✅') ? 'green' : ''" style="word-break: break-all">{{ importMsg }}</div>
     </section>
 
-    <section class="card block">
-      <div class="block-head"><h3>关于</h3></div>
-      <p class="block-desc">
-        AgentSkillHub v{{ pkg.version }} · 本地桌面应用，技能统一管理。
-        技能源文件永远只存放在技能库目录；本工具只负责在各 Agent 的 skills 目录创建 / 移除 Junction 链接。
-      </p>
-    </section>
-  </div>
+</div></div>
 </template>
-
 <style scoped>
-.settings {
-  max-width: 980px;
-}
-.page-head {
-  margin-bottom: 16px;
-}
-h1 {
-  font-size: 21px;
-  font-weight: 700;
-}
-.sub {
-  color: var(--muted);
-  font-size: 13px;
-  margin-top: 2px;
-}
-.block {
-  margin-bottom: 16px;
-}
-.block-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 6px;
-}
-.block-head h3 {
-  font-size: 15px;
-}
-.block-desc {
-  color: var(--muted);
-  font-size: 12.5px;
-  margin-bottom: 12px;
-}
-.row {
-  display: flex;
-  gap: 10px;
-}
-.row .input {
-  flex: 1;
-}
-.hint {
-  margin-top: 10px;
-  color: var(--faint);
-  font-size: 12px;
-}
-.hint.green {
-  color: var(--green);
-}
-
-.new-agent {
-  display: grid;
-  grid-template-columns: 1fr 1fr 2fr auto;
-  gap: 8px;
-  background: var(--bg-soft);
-  border-radius: var(--radius-sm);
-  padding: 10px;
-  margin-bottom: 12px;
-}
-
-.agent-table {
-  border: 1px solid var(--border-soft);
-  border-radius: var(--radius);
-  overflow: hidden;
-}
-.at-row {
-  display: grid;
-  grid-template-columns: 1.2fr 0.8fr 2.2fr 0.7fr 60px;
-  gap: 8px;
-  align-items: center;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--border-soft);
-  font-size: 13px;
-}
-.at-row:last-child {
-  border-bottom: none;
-}
-.at-head {
-  background: var(--bg-soft);
-  color: var(--faint);
-  font-size: 12px;
-}
-.at-id {
-  font-family: Consolas, monospace;
-  font-size: 12px;
-  color: var(--accent);
-}
-
-.detected-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.detected-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px 14px;
-  border: 1px solid var(--border-soft);
-  border-radius: var(--radius-sm);
-  background: var(--bg-soft);
-  transition: all 0.15s;
-}
-.detected-item:hover {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-}
-.d-info {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-.d-info b {
-  font-size: 13.5px;
-}
-.d-info code {
-  font-size: 11.5px;
-  color: var(--faint);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+.settings { max-width:1200px; }.page-head { margin-bottom:24px; }.sub { color:var(--muted); font-size:13px; margin-top:6px; }
+.settings-tabs { display:flex; gap:28px; border-bottom:1px solid var(--border); margin-bottom:28px; }.settings-tabs button { padding:0 0 14px; border:0; border-bottom:2px solid transparent; background:none; color:var(--muted); font-size:13px; cursor:pointer; }.settings-tabs button.active { color:var(--text); border-color:var(--accent); font-weight:600; }
+.settings-section { max-width:980px; }.block { margin-bottom:18px; }.block-head { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:8px; }.block h3 { font-size:15px; }.block-desc { color:var(--muted); font-size:12px; line-height:1.8; margin:8px 0 14px; }.row { display:flex; gap:10px; }.row .input { flex:1; min-width:0; }.hint { color:var(--faint); font-size:12px; margin-top:12px; }.hint.green { color:var(--green); }
 </style>

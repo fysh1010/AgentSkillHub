@@ -38,6 +38,12 @@ C:\Users\xxx\.zcode\skills\xxx      → E:\my-skills\xxx
 
 ## 功能总览
 
+### 本机工具识别与配置开关
+- 启动自动发现已知 Agent，综合配置目录、PATH、Windows 安装登记与运行进程展示识别证据；支持尚未创建技能目录的工具。
+- 路径跟随当前用户与应用环境变量解析，修复旧默认用户名和豆包失效默认路径，同时保留自定义位置。
+- 「设置 → Agent 工具」只展示本机已安装工具，未安装规则另列；每个工具可独立开关配置。「设置 → 内置技能」展示 WorkBuddy、豆包等工具内置与插件技能的来源位置、实际路径和技能清单。
+- 界面支持黑白 / 蓝白配色，统一浅灰导航、白色内容区与线性图标；[设计参考](docs/DESIGN.md)与[识别策略](docs/DISCOVERY.md)均有说明。
+
 ### 📚 技能库管理
 - 自动扫描技能库目录，解析每个技能的 SKILL.md（名称 / 描述 / 版本 / 健康状态）
 - **官方图标**：优先显示技能自带图标；从市场安装的技能会把官方图标落盘到技能目录
@@ -50,7 +56,10 @@ C:\Users\xxx\.zcode\skills\xxx      → E:\my-skills\xxx
 - **应用内回收站**：删除先进回收站（同盘秒移），可一键还原；「彻底删除」才进 Windows 回收站
 
 ### 🤖 多 Agent 配置与部署
-- 内置 6 个常见 Agent（可增删改路径），支持自动检测未注册的 Agent
+- 内置 63 条产品路径规则，以本机安装证据区分已安装与待确认工具；支持自定义 Agent 和路径。
+- 每个工具独立控制「允许配置」，关闭后保留原链接和技能分配，扫描和重启不会自动重新开启。
+- **工具内置技能**：只读浏览各家插件缓存 / IDE 内置技能包里的自带技能（Qoder / Claude Code / Trae 等），
+  按需「收编」副本进技能库共享给其他 Agent —— 这些目录由对应工具自己升级，绝不往里做链接部署
 - 对每个 Agent 独立勾选启用哪些技能
 - 部署前**差异预览**（新增 / 移除 / 迁移），支持**干跑**（dry-run）
 - 一键**回滚**最近一次部署；全程审计日志
@@ -72,34 +81,21 @@ C:\Users\xxx\.zcode\skills\xxx      → E:\my-skills\xxx
 - 技能库 **Git 快照备份**：一键 `add + commit`（无仓库自动 init），删错随时回滚
 - **环境清单导出/导入**：把 Agent 分配、收藏标签导出为单个 JSON，换机 / 重装后一键恢复
   （导入按 Agent 覆盖分配关系，缺失技能显示为「已失效」，不含技能文件本体）
-- **Doctor 体检**：一键扫描失效 junction 链接、指向未启用技能的链接、配置引用失效技能、
-  部署漂移、孤儿实体目录、技能库异常，可逐项或全部自动修复，全程留痕
 - 纯本地运行，不收集任何数据；唯一的网络请求是市场浏览 / 下载 / 免费翻译接口
 
 ## 安装
 
-### 官方下载（Windows，Releases）
+### 官方下载（Windows x64，免安装）
 
-| 产物 | 说明 |
-|---|---|
-| `AgentSkillHub_*_x64-setup.exe` | NSIS 安装包（推荐） |
-| `AgentSkillHub-*-portable.zip` | 免安装便携版，解压即用 |
+前往 [最新 Release](https://github.com/fysh1010/AgentSkillHub/releases/latest) 下载 `AgentSkillHub-v0.3.0-portable.zip`，解压后双击 `AgentSkillHub.exe` 即可运行。
 
-👉 前往 [Releases](https://github.com/fysh1010/AgentSkillHub/releases) 下载，由 CI（GitHub Actions）自动构建发布。
+从 v0.3.0 开始，下载区只发布一个免安装 ZIP；旧版本安装包保留在历史 Release 中。
 
-> Windows 需 WebView2 运行时（Win11 自带；Win10 若没有，安装器会引导安装）。
+> 需要 Microsoft Edge WebView2 运行时。Windows 11 通常已具备；Windows 10 若缺少，请先安装运行时。
 >
-> **macOS / Linux 用户**：本工具的部署机制针对 Windows Junction 设计，暂不提供官方跨平台包；
-> 代码本身基于 Tauri 可跨平台编译，可参照 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) 自行打包体验
-> （部署功能需自行适配 symlink，见路线图）。
-
-### 方式一：安装包（推荐）
-
-下载 `AgentSkillHub_0.2.1_x64-setup.exe`，双击安装。
-
-### 方式二：免安装便携版
-
-下载 `AgentSkillHub-0.2.1-portable.zip`，解压后直接运行 `AgentSkillHub.exe`。
+> 配置保存在 `%APPDATA%/com.agentskillhub.app`，更新程序会沿用现有配置与技能库。
+>
+> **macOS / Linux 用户**：部署机制针对 Windows Junction 设计，暂不提供官方跨平台包，参见 [开发指南](docs/DEVELOPMENT.md)。
 
 ### 方式三：从源码构建
 
@@ -107,15 +103,15 @@ C:\Users\xxx\.zcode\skills\xxx      → E:\my-skills\xxx
 git clone https://github.com/fysh1010/AgentSkillHub.git
 cd AgentSkillHub
 npm install
-npm run tauri build    # 产物在 src-tauri/target/release/bundle/
+npm run tauri -- build --no-bundle    # 产物为 src-tauri/target/release/agentskillhub.exe
 npm run tauri dev      # 开发模式
 ```
 
-依赖：Node.js 18+、Rust 1.77+、WebView2（Windows）。
+依赖：Node.js 22.12+、Rust 1.77+、WebView2（Windows）。
 
 ## 快速上手
 
-1. **首次启动**：进入「设置」确认技能库根目录（默认 `E:\my-skills`，可改）与 Agent 列表
+1. **首次启动**：进入「设置」确认技能库根目录（默认当前用户目录下的 `AgentSkillHub/skills`，可改）与 Agent 列表
 2. **配技能**：到「Agent 配置」左侧选工具，右侧勾选技能 → 点「部署」→ 查看差异 → 确认
 3. **装新技能**：到「技能市场」搜索或浏览分类推荐 → 安装 → 在弹窗里勾选要启用的 Agent → 完成
 4. **日常维护**：总览看健康状态；技能库可收藏、打标签、看全文、删技能（可还原）
@@ -190,7 +186,6 @@ WorkBuddy 目录为真实副本（其加载器不完全遵循 Junction），豆�
 
 - [x] Windows 官方 CI 构建（安装包 + 便携版，推 tag 自动发布）
 - [x] 内容级安全扫描（进程执行 / 网络 / 凭证 / 混淆四类模式）
-- [x] Doctor 体检与一键修复（失效链接 / 漂移 / 失效配置 / 孤儿目录）
 - [x] 环境清单导出 / 导入（换机恢复）
 - [x] 上下文预算（每 Agent token 开销估算与预警）
 - [ ] macOS / Linux 的 symlink 链接模式适配（当前部署逻辑针对 Windows Junction）

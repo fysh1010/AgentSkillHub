@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
-import { store, loadAll, toast, ensureTranslate, needsTranslation, transMap, isEnabled, ui, secLevels, loadSecuritySummary, tokenStats, refreshTokenStats } from "../store";
-import { listExternalSkills, adoptSkill, doctorScan } from "../api/tauri";
+import { store, openAgentSettings, discovery, discoverMachine, loadAll, toast, ensureTranslate, needsTranslation, transMap, isEnabled, ui, secLevels, loadSecuritySummary, tokenStats, refreshTokenStats } from "../store";
+import { listExternalSkills, adoptSkill } from "../api/tauri";
 import { useEsc } from "../composables/useEsc";
 import type { ExternalSkill, SkillInfo } from "../types";
 
@@ -13,14 +13,13 @@ useEsc(() => {
 
 onMounted(() => {
   loadSecuritySummary().catch(() => {});
-  doctorScan().then((r) => {
-    store.doctorCount = r.length;
-  }).catch(() => {});
   refreshTokenStats().catch(() => {});
 });
 
 const totalSkills = computed(() => store.skills.length);
 const healthy = computed(() => store.skills.filter((s) => s.healthy).length);
+const nativeSkills = computed(() => discovery.inventory?.sources.reduce((n, s) => n + s.skill_count, 0) || 0);
+const confirmedAgents = computed(() => discovery.inventory?.agents.filter((a) => !a.shared && a.installed).length || 0);
 const agents = computed(() => store.agents);
 const pendingAgents = computed(() => agents.value.filter((a) => a.drift));
 const readyAgents = computed(() => agents.value.filter((a) => !a.drift && a.dir_ok));
@@ -45,7 +44,7 @@ const externalLoading = ref(false);
 const adopting = ref("");
 
 function statusTone(a: { drift: boolean; dir_ok: boolean }) {
-  if (!a.dir_ok) return "red";
+  if (!a.dir_ok) return "amber";
   if (a.drift) return "amber";
   return "green";
 }
@@ -106,74 +105,52 @@ function openSkills(a: { id: string; name: string }) {
   <div>
     <header class="page-head">
       <div>
-        <h1>总览</h1>
-        <p class="sub">技能库与所有 AI Agent 的接入状态一目了然</p>
+        <h1>工作空间</h1>
+        <p class="sub">你的技能、Agent 和部署状态，集中管理。</p>
       </div>
-      <button class="btn primary" @click="loadAll()" :disabled="store.loading">
-        <span v-if="store.loading">扫描中…</span>
-        <span v-else>重新扫描</span>
-      </button>
+      <div class="dashboard-actions">
+        <button class="btn" @click="discoverMachine()" :disabled="store.loading || discovery.loading">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M20 7v5h-5M4 17v-5h5M6 8a7 7 0 0 1 11.8-2L20 9M4 15l2.2 3A7 7 0 0 0 18 16" /></svg>
+          {{ store.loading || discovery.loading ? "扫描中…" : "重新扫描" }}
+        </button>
+        <button class="btn primary" @click="ui.page = 'skills'">浏览技能库 <span>↗</span></button>
+      </div>
     </header>
 
     <div class="stats">
-      <div class="card stat">
-        <div class="stat-icon blue">
-          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2 3 7v10l9 5 9-5V7l-9-5z"/></svg>
-        </div>
-        <div class="stat-body">
-          <div class="stat-num">{{ totalSkills }}</div>
-          <div class="stat-label">技能总数</div>
-        </div>
-      </div>
-      <div class="card stat">
-        <div class="stat-icon green">
-          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4L9 16.2z"/></svg>
-        </div>
-        <div class="stat-body">
-          <div class="stat-num">{{ healthy }}</div>
-          <div class="stat-label">健康技能</div>
-        </div>
-      </div>
-      <div class="card stat">
-        <div class="stat-icon purple">
-          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a4 4 0 0 1 4 4c0 1.4-.7 2.6-1.8 3.3A6 6 0 0 1 18 15v2H6v-2a6 6 0 0 1 3.8-5.7A4 4 0 0 1 12 2z"/></svg>
-        </div>
-        <div class="stat-body">
-          <div class="stat-num">{{ agents.length }}</div>
-          <div class="stat-label">Agent 数量</div>
-        </div>
-      </div>
-      <div class="card stat">
-        <div class="stat-icon amber">
-          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M13 3a9 9 0 0 0-9 9H1l3.9 3.9.1.1L9 12H6a7 7 0 1 1 2 4.9l-1.4 1.4A9 9 0 1 0 13 3zm-1 5v5l4.3 2.5.7-1.2-3.5-2.1V8H12z"/></svg>
-        </div>
-        <div class="stat-body">
-          <div class="stat-num">{{ pendingAgents.length }}</div>
-          <div class="stat-label">待部署</div>
-        </div>
-      </div>
+      <article class="card stat">
+        <div class="stat-heading"><span>技能库</span><svg viewBox="0 0 24 24"><path d="m12 3 9 5-9 5-9-5 9-5ZM3 8v9l9 5 9-5V8M12 13v9" /></svg></div>
+        <div class="stat-num">{{ totalSkills }}<span>个技能</span></div>
+        <p class="stat-caption">{{ healthy }} 个技能元信息完整</p>
+      </article>
+      <article class="card stat">
+        <div class="stat-heading"><span>内置与插件技能</span><svg viewBox="0 0 24 24"><path d="M9 3H4v7h3a2 2 0 1 1 0 4H4v7h7v-3a2 2 0 1 1 4 0v3h5v-7h-3a2 2 0 1 1 0-4h3V3h-5v3a3 3 0 1 1-6 0V3Z" /></svg></div>
+        <div class="stat-num">{{ nativeSkills }}<span>个条目</span></div>
+        <p class="stat-caption">来自 {{ discovery.inventory?.sources.length || 0 }} 处本机来源</p>
+      </article>
+      <article class="card stat">
+        <div class="stat-heading"><span>已接入 Agent</span><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="13" rx="2"/><path d="M8 22h8M12 18v4M8 10h.01M16 10h.01M8 14h8"/></svg></div>
+        <div class="stat-num">{{ agents.length }}<span>个工具</span></div>
+        <p class="stat-caption">{{ confirmedAgents }} 个已确认安装</p>
+      </article>
+      <article class="card stat">
+        <div class="stat-heading"><span>待部署</span><svg viewBox="0 0 24 24"><path d="M12 3v12m-4-4 4 4 4-4M4 15v5h16v-5"/></svg></div>
+        <div class="stat-num">{{ pendingAgents.length }}<span>个工具</span></div>
+        <p class="stat-caption">{{ readyAgents.length }} 个工具的目录已就绪</p>
+      </article>
     </div>
 
     <!-- 未分配技能提醒 -->
-    <div v-if="unassigned.length" class="card unassigned-banner" @click="gotoAgents">
-      <span class="unassigned-icon">📦</span>
+    <button v-if="unassigned.length" class="card unassigned-banner" @click="gotoAgents">
+      <span class="unassigned-icon">◇</span>
       <span class="unassigned-txt">
         有 <b>{{ unassigned.length }}</b> 个技能还没有分配给任何 Agent
         <span class="unassigned-preview">{{ unassigned.slice(0, 4).map((s) => s.name).join("、") }}{{ unassigned.length > 4 ? " 等" : "" }}</span>
       </span>
       <span class="unassigned-go">去分配 →</span>
-    </div>
+    </button>
 
-    <!-- 体检问题提醒 -->
-    <div v-if="store.doctorCount && store.doctorCount > 0" class="card unassigned-banner" @click="ui.page = 'doctor'" style="border-color: rgba(245,158,11,.4)">
-      <span class="unassigned-icon">🩺</span>
-      <span class="unassigned-txt">
-        体检发现 <b>{{ store.doctorCount }}</b> 个问题，建议及时处理
-      </span>
-      <span class="unassigned-go">去体检 →</span>
-    </div>
-
-    <h2 class="section-title">Agent 状态</h2>
+    <div class="section-heading"><div><h2 class="section-title">你的 Agent <span>{{ agents.length }}</span></h2><p>查看接入状态，选择工具管理已配置的技能。</p></div><button class="section-link" @click="openAgentSettings()">管理工具 <span>↗</span></button></div>
     <div class="agent-grid">
       <div
         v-for="a in agents"
@@ -181,16 +158,20 @@ function openSkills(a: { id: string; name: string }) {
         class="card agent-card"
         :class="statusTone(a)"
         :title="`点击查看 ${a.agent.name} 配置的技能`"
+        role="button"
+        tabindex="0"
+        @keydown.enter="openSkills({ id: a.agent.id, name: a.agent.name })"
+        @keydown.space.prevent="openSkills({ id: a.agent.id, name: a.agent.name })"
         @click="openSkills({ id: a.agent.id, name: a.agent.name })"
       >
         <div class="agent-row">
-          <span class="pulse" :class="statusTone(a)"></span>
+          <span class="agent-avatar">{{ a.agent.name.replace('OpenAI ', '').replace('腾讯 ', '').slice(0, 2).toUpperCase() }}</span>
           <div class="agent-info">
             <b>{{ a.agent.name }}</b>
             <span class="agent-dir" :title="a.agent.skills_dir">{{ a.agent.skills_dir }}</span>
           </div>
           <span class="badge" :class="statusTone(a)">
-            {{ a.drift ? "待部署" : !a.dir_ok ? "异常" : "就绪" }}
+            {{ !a.dir_ok ? "待初始化" : a.drift ? "待部署" : "已就绪" }}
           </span>
         </div>
         <div class="agent-meta">
@@ -236,12 +217,12 @@ function openSkills(a: { id: string; name: string }) {
       </div>
       <div v-if="!agents.length" class="card empty">
         <div class="icon">▣</div>
-        尚未注册任何 Agent，请前往「设置」添加。
+        尚未开启任何 Agent 的配置。<br /><button class="btn" style="margin-top:12px" @click="openAgentSettings()">前往设置选择本机工具 →</button>
       </div>
     </div>
 
     <p class="foot-note" v-if="readyAgents.length">
-      ✅ {{ readyAgents.length }} 个 Agent 已就绪；{{ pendingAgents.length }} 个待部署，可在「Agent 配置」中处理。
+      {{ readyAgents.length }} 个 Agent 已就绪 · {{ pendingAgents.length }} 个待部署
     </p>
 
     <!-- 外部技能弹窗 -->
@@ -331,183 +312,49 @@ function openSkills(a: { id: string; name: string }) {
 </template>
 
 <style scoped>
-.stats {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 16px;
-  margin-bottom: 26px;
-}
-.stat {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 18px;
-}
-.stat-icon {
-  width: 46px;
-  height: 46px;
-  border-radius: 12px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-.stat-icon svg {
-  width: 22px;
-  height: 22px;
-}
-.stat-icon.blue { background: var(--accent-soft); color: var(--accent); }
-.stat-icon.green { background: var(--green-soft); color: var(--green); }
-.stat-icon.purple { background: rgba(124, 92, 252, 0.1); color: #7c5cfc; }
-.stat-icon.amber { background: var(--amber-soft); color: #d97706; }
 
-.stat-body {
-  display: flex;
-  flex-direction: column;
-  line-height: 1.3;
+.dashboard-actions { display:flex; gap:10px; align-items:center; }
+.dashboard-actions .btn.primary { gap:18px; }
+.stats { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:16px; margin:28px 0 22px; }
+.stat { padding:20px 22px 18px; }
+.stat-heading { display:flex; justify-content:space-between; align-items:center; gap:10px; color:var(--muted); font-size:12px; font-weight:500; }
+.stat-heading svg { width:17px; height:17px; stroke:currentColor; fill:none; stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round; color:var(--faint); flex-shrink:0; }
+.stat-num { font:500 32px/1.3 "Bahnschrift",sans-serif; letter-spacing:-1px; margin:14px 0 6px; font-variant-numeric:tabular-nums; }
+.stat-num > span { font:400 11px "Microsoft YaHei UI",sans-serif; color:var(--faint); letter-spacing:0; margin-left:8px; }
+.stat-caption { color:var(--faint); font-size:11px; }
+.section-heading { display:flex; justify-content:space-between; align-items:center; gap:20px; margin:30px 0 18px; }
+.section-title { font-size:16px; font-weight:600; }
+.section-title > span { display:inline-block; margin-left:7px; padding:1px 6px; border:1px solid var(--border); border-radius:5px; font:11px/17px "Consolas",monospace; color:var(--muted); vertical-align:middle; }
+.section-heading p { font-size:12px; color:var(--faint); margin-top:5px; }
+.section-link { display:flex; align-items:center; gap:10px; background:none; border:0; padding:5px 0; color:var(--muted); font-size:12px; cursor:pointer; }
+.section-link:hover { color:var(--accent); }
+.unassigned-banner { width:100%; display:flex; align-items:center; text-align:left; gap:12px; padding:13px 16px; border:1px solid var(--border); background:var(--bg-soft); cursor:pointer; transition:border-color .15s; }
+.unassigned-banner:hover { border-color:var(--accent); }
+.unassigned-icon { display:grid; place-items:center; width:25px; height:25px; border:1px solid var(--border); border-radius:6px; color:var(--muted); flex-shrink:0; background:var(--panel); }
+.unassigned-txt { flex:1; min-width:0; font-size:12px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.unassigned-txt b { color:var(--text); font-weight:600; }
+.unassigned-preview { color:var(--faint); font-size:11px; margin-left:10px; }
+.unassigned-go { color:var(--accent); font-size:12px; font-weight:500; white-space:nowrap; }
+.agent-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:16px; }
+.agent-card { cursor:pointer; padding:19px 20px 15px; transition:border-color .15s,box-shadow .15s; }
+.agent-card:hover { border-color:#b8b8c1; box-shadow:var(--shadow); }
+.agent-row { display:flex; align-items:center; gap:10px; }
+.agent-avatar { display:grid; place-items:center; width:34px; height:34px; flex-shrink:0; border-radius:8px; border:1px solid var(--border); background:var(--bg-soft); font:500 11px "Bahnschrift",sans-serif; letter-spacing:-.4px; color:var(--text); }
+.agent-info { flex:1; min-width:0; display:flex; flex-direction:column; }
+.agent-info b { font-size:13px; font-weight:600; }
+.agent-dir { color:var(--faint); font-size:10px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; margin-top:3px; font-family:"Cascadia Code","Consolas",monospace; }
+.agent-row .badge { font-size:10px; white-space:nowrap; padding:2px 6px; }
+.agent-meta { display:flex; gap:28px; padding:19px 0 3px; margin-top:14px; border-top:1px solid var(--border-soft); }
+.meta-item { display:flex; flex-direction:column; align-items:flex-start; gap:3px; }
+.meta-item.clickable { cursor:pointer; border-radius:5px; padding:0 6px; margin:0 -6px; }
+.meta-item.clickable:hover { background:var(--accent-soft); }
+.meta-num.purple { color:var(--text); }
+@media (max-width:1100px) {
+  .stats { gap:12px; }
+  .stat { padding:16px; }
+  .stat-num { font-size:29px; }
+  .unassigned-preview { display:none; }
 }
-.stat-num {
-  font-size: 26px;
-  font-weight: 800;
-  letter-spacing: -0.5px;
-  font-variant-numeric: tabular-nums;
-}
-.stat-label {
-  color: var(--muted);
-  font-size: 12.5px;
-}
-
-.section-title {
-  font-size: 15px;
-  font-weight: 600;
-  margin-bottom: 12px;
-}
-
-/* 未分配技能提醒横幅 */
-.unassigned-banner {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 16px;
-  margin-bottom: 20px;
-  border: 1px dashed rgba(245, 158, 11, 0.5);
-  cursor: pointer;
-  transition: all 0.15s;
-}
-.unassigned-banner:hover {
-  border-color: var(--accent);
-  transform: translateY(-1px);
-  box-shadow: var(--shadow);
-}
-.unassigned-icon {
-  font-size: 20px;
-}
-.unassigned-txt {
-  flex: 1;
-  font-size: 13px;
-  color: var(--text);
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.unassigned-preview {
-  color: var(--muted);
-  font-size: 12px;
-  margin-left: 8px;
-}
-.unassigned-go {
-  color: var(--accent);
-  font-size: 12.5px;
-  font-weight: 600;
-  flex-shrink: 0;
-}
-
-.agent-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 16px;
-}
-.agent-card {
-  transition: all 0.16s;
-  position: relative;
-  overflow: hidden;
-}
-.agent-card::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 3px;
-  background: var(--border-soft);
-}
-.agent-card.green::before { background: linear-gradient(90deg, #12b76a, #4ade80); }
-.agent-card.amber::before { background: linear-gradient(90deg, #f59e0b, #fbbf24); }
-.agent-card.red::before { background: linear-gradient(90deg, #ef4444, #f87171); }
-.agent-card:hover {
-  box-shadow: var(--shadow);
-  transform: translateY(-2px);
-}
-.agent-card {
-  cursor: pointer;
-}
-
-.agent-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.pulse {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-.pulse.green { background: var(--green); box-shadow: 0 0 0 3px var(--green-soft); }
-.pulse.amber { background: var(--amber); box-shadow: 0 0 0 3px var(--amber-soft); }
-.pulse.red { background: var(--red); box-shadow: 0 0 0 3px var(--red-soft); }
-
-.agent-info {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-}
-.agent-info b {
-  font-size: 14.5px;
-}
-.agent-dir {
-  color: var(--faint);
-  font-size: 11.5px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.agent-meta {
-  display: flex;
-  gap: 20px;
-  margin-top: 14px;
-  padding-top: 12px;
-  border-top: 1px solid var(--border-soft);
-}
-.meta-item {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-}
-.meta-item.clickable {
-  cursor: pointer;
-  border-radius: 8px;
-  padding: 2px 8px;
-  margin: -2px -8px;
-  transition: background 0.15s;
-}
-.meta-item.clickable:hover {
-  background: rgba(124, 92, 252, 0.08);
-}
-.meta-num.purple { color: #7c5cfc; }
 
 /* 外部技能弹窗 */
 .ext-note {
@@ -581,7 +428,7 @@ function openSkills(a: { id: string; name: string }) {
   font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
-.meta-num.green { color: var(--green); }
+.meta-num.green { color: var(--text); }
 .meta-num.amber { color: #d97706; }
 .meta-label {
   font-size: 11px;
@@ -590,11 +437,10 @@ function openSkills(a: { id: string; name: string }) {
 
 .agent-msg {
   margin-top: 10px;
-  font-size: 12px;
+  font-size: 11px;
   color: var(--muted);
-  background: var(--bg-soft);
-  border-radius: 8px;
-  padding: 6px 10px;
+  padding: 10px 0 0;
+  border-top: 1px solid var(--border-soft);
 }
 
 .foot-note {

@@ -14,6 +14,7 @@ pub fn run() {
             app.manage(AppState {
                 config: Mutex::new(cfg),
                 handle,
+                inventory: Mutex::new(None),
             });
             Ok(())
         })
@@ -21,7 +22,6 @@ pub fn run() {
             commands::get_sync_data,
             commands::scan_skills_cmd,
             commands::set_skills_root,
-            commands::save_agents,
             commands::toggle_skill,
             commands::compute_diff_cmd,
             commands::deploy_cmd,
@@ -31,6 +31,9 @@ pub fn run() {
             commands::refresh_status,
             commands::import_existing_links,
             commands::detect_agents,
+            commands::refresh_discovery,
+            commands::set_agent_management,
+            commands::save_custom_agent,
             commands::market_sources,
             commands::market_add_source,
             commands::market_remove_source,
@@ -38,6 +41,9 @@ pub fn run() {
             commands::market_install,
             commands::list_external_skills,
             commands::adopt_skill,
+            commands::detect_builtin_sources,
+            commands::builtin_source_skills,
+            commands::adopt_builtin_skill,
             commands::translate_text,
             commands::ensure_skill_icon,
             commands::read_skill_detail,
@@ -48,8 +54,6 @@ pub fn run() {
             commands::git_backup,
             commands::scan_skill_security,
             commands::scan_security_summary,
-            commands::doctor_scan,
-            commands::doctor_fix,
             commands::token_stats,
             commands::set_token_budget,
             commands::export_manifest,

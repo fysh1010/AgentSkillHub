@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { onMounted, ref, shallowRef, Transition, watch } from "vue";
-import { loadAll, removeToast, store, ui } from "./store";
+import { computed, onMounted, onUnmounted, nextTick, ref, shallowRef, Transition, watch } from "vue";
+import { discoverMachine, discovery, loadAll, removeToast, store, ui } from "./store";
 import pkg from "../package.json";
 import Dashboard from "./views/Dashboard.vue";
 import Skills from "./views/Skills.vue";
@@ -8,17 +8,19 @@ import AgentConfig from "./views/AgentConfig.vue";
 import AuditView from "./views/AuditView.vue";
 import Settings from "./views/Settings.vue";
 import Market from "./views/Market.vue";
-import Doctor from "./views/Doctor.vue";
+import { useAppearance } from "./composables/useAppearance";
+
+const { appearance, setAppearance } = useAppearance();
 
 const pages = [
-  { id: "dashboard", name: "总览", icon: "M4 13h6V4H4v9zm0 7h6v-5H4v5zm10 0h6v-9h-6v9zm0-16v5h6V4h-6z" },
-  { id: "skills", name: "技能库", icon: "M12 2 3 7v10l9 5 9-5V7l-9-5zm0 2.3 6.8 3.8-2.4 1.3L12 6.3 7.6 8.4 5.2 7.1 12 4.3zM5 16.4v-7l5 2.8v7l-5-2.8zm9 .8 5-2.8v-7l-5 2.8v7z" },
-  { id: "market", name: "技能市场", icon: "M4 4h2v12h14v2H4V4zm4 2h12v8H8V6zm3 2v1h2V8h-2zm-3 8h2v2h-2v-2zm4 0h2v2h-2v-2z" },
-  { id: "agents", name: "Agent 配置", icon: "M4 4h7v7H4V4zm9 0h7v7h-7V4zM4 13h7v7H4v-7zm9 0h7v7h-7v-7z" },
-  { id: "audit", name: "部署记录", icon: "M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm1 15h-2v-6h2zm0-8h-2V7h2z" },
-  { id: "doctor", name: "体检", icon: "M12 2 4 5v6c0 5 3.4 9.7 8 11 4.6-1.3 8-6 8-11V5l-8-3zm-1.2 13.6-3-3 1.4-1.4 1.6 1.6 4.2-4.2 1.4 1.4-5.6 5.6z" },
-  { id: "settings", name: "设置", icon: "M19.4 13a7.6 7.6 0 0 0 0-2l2.1-1.6-2-3.5-2.5 1a7.6 7.6 0 0 0-1.7-1l-.4-2.6h-4l-.4 2.6a7.6 7.6 0 0 0-1.7 1l-2.5-1-2 3.5L6.6 11a7.6 7.6 0 0 0 0 2l-2.1 1.6 2 3.5 2.5-1a7.6 7.6 0 0 0 1.7 1l.4 2.6h4l.4-2.6a7.6 7.6 0 0 0 1.7-1l2.5 1 2-3.5-2.1-1.6zM12 15.5A3.5 3.5 0 1 1 15.5 12 3.5 3.5 0 0 1 12 15.5z" },
+  { id:"dashboard",name:"总览",icon:"M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z" },
+  { id:"skills",name:"技能库",icon:"m12 3 9 5-9 5-9-5 9-5ZM3 8v9l9 5 9-5V8 M12 13v9" },
+  { id:"market",name:"技能市场",icon:"M3 10h18 M5 10v11h14V10 M3 10l2-7h14l2 7 M9 21v-7h6v7" },
+  { id:"agents",name:"Agent 配置",icon:"M4 5h16 M4 12h16 M4 19h16 M8 3v4 M16 10v4 M10 17v4" },
+  { id:"audit",name:"部署记录",icon:"M8 3h10l3 3v15H3V3h2 M8 3v4h8V3 M7 12h10 M7 16h7" },
+  { id:"settings",name:"设置",icon:"m9 3-1 3-3 1-2 4 2 2v3l3 3h3l2 2 4-2 1-3 3-1V9l-3-1-1-3-4-2-2 2H9Z M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" },
 ];
+const mainEl = ref<HTMLElement>();
 
 const current = ref(ui.page);
 const view = shallowRef(Dashboard);
@@ -31,14 +33,16 @@ const pageMap: Record<string, any> = {
   market: Market,
   agents: AgentConfig,
   audit: AuditView,
-  doctor: Doctor,
   settings: Settings,
 };
+const pageName = computed(() => pages.find((p) => p.id === current.value)?.name || "总览");
 
 function nav(id: string) {
+  if (id === "discovery") { ui.settingsTab = "agents"; id = "settings"; }
   current.value = id;
   ui.page = id;
   view.value = pageMap[id] || Dashboard;
+  void nextTick(() => mainEl.value?.scrollTo({top:0}));
 }
 
 // 其他页面（如总览的「去分配」按钮）通过 ui.page 请求跳转
@@ -49,9 +53,15 @@ watch(
   }
 );
 
-onMounted(() => {
-  loadAll();
+function refreshOnFocus() {
+  if (!discovery.loading && (!discovery.inventory || Date.now()/1000-discovery.inventory.scanned_at > 30)) void discoverMachine();
+}
+onMounted(async () => {
+  window.addEventListener("focus",refreshOnFocus);
+  await loadAll();
+  await discoverMachine();
 });
+onUnmounted(() => window.removeEventListener("focus",refreshOnFocus));
 </script>
 
 <template>
@@ -59,44 +69,54 @@ onMounted(() => {
     <aside class="sidebar">
       <div class="logo">
         <div class="logo-icon">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M12 2 3 7v10l9 5 9-5V7l-9-5z" />
-            <path d="M12 12 3 7" />
-            <path d="M12 12l9-5" />
-            <path d="M12 12v10" />
-          </svg>
+          <img src="/app-icon.svg" alt="" />
         </div>
         <div class="logo-text">
           <b>AgentSkillHub</b>
-          <span>技能统一管理台</span>
+          <span>Agent 技能管理</span>
         </div>
       </div>
 
-      <nav class="nav">
+      <div class="nav-caption">工作空间</div>
+      <nav class="nav" aria-label="主导航">
         <button
           v-for="p in pages"
           :key="p.id"
           class="nav-item"
-          :class="{ active: current === p.id }"
+          :class="{ active: current === p.id, 'nav-management':p.id === 'agents', 'nav-settings':p.id === 'settings' }"
+          :aria-current="current === p.id ? 'page' : undefined"
           @click="nav(p.id)"
         >
-          <svg class="nav-icon" viewBox="0 0 24 24" fill="currentColor">
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round">
             <path :d="p.icon" />
           </svg>
           <span>{{ p.name }}</span>
+          <span v-if="p.id === 'skills'" class="nav-count">{{ store.skills.length }}</span>
+          <span v-if="p.id === 'agents'" class="nav-count">{{ store.agents.length }}</span>
         </button>
       </nav>
 
       <div class="sidebar-foot">
+        <div class="workspace-label"><span class="workspace-symbol">S</span><div><b>本地技能空间</b><span>一个技能库，连接所有 Agent</span></div></div>
         <div class="lib-path" :title="store.config?.skills_root">
           <span class="dot" :class="{ ok: store.config?.skills_root }"></span>
           {{ store.config?.skills_root || "未设置技能库" }}
         </div>
-        <div class="ver">v{{ pkg.version }} · 本地运行 · 数据不出本机</div>
+        <div class="ver">v{{ pkg.version }}<span>本地文件管理</span></div>
       </div>
     </aside>
 
-    <main class="main">
+    <main ref="mainEl" class="main">
+      <div class="workspace-bar">
+        <div class="breadcrumb">工作空间 <span>/</span> <b>{{ pageName }}</b></div>
+        <div class="workspace-tools">
+          <span class="local-status"><i></i>{{ discovery.loading ? '正在发现本机工具' : '本地运行' }}</span>
+          <div class="appearance-switch" role="group" aria-label="界面配色">
+            <button :class="{ active: appearance === 'monochrome' }" :aria-pressed="appearance === 'monochrome'" @click="setAppearance('monochrome')"><i class="swatch mono"></i>黑白</button>
+            <button :class="{ active: appearance === 'blue' }" :aria-pressed="appearance === 'blue'" @click="setAppearance('blue')"><i class="swatch blue"></i>蓝白</button>
+          </div>
+        </div>
+      </div>
       <!-- 扫描进行中的顶部进度条 -->
       <div v-if="store.loading" class="scan-bar"></div>
       <Transition name="page" mode="out-in">
@@ -124,33 +144,34 @@ onMounted(() => {
 .sidebar {
   width: 224px;
   flex-shrink: 0;
-  background: var(--panel);
-  border-right: 1px solid var(--border-soft);
+  background: var(--sidebar-bg);
+  color: var(--text);
+  border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  padding: 20px 12px 16px;
+  padding: 26px 14px 20px;
 }
 
 .logo {
   display: flex;
   align-items: center;
-  gap: 11px;
-  padding: 2px 8px 20px;
+  gap: 10px;
+  padding: 0 8px 30px;
 }
 .logo-icon {
-  width: 42px;
-  height: 42px;
-  border-radius: 12px;
-  background: var(--grad);
-  color: #fff;
+  width: 35px;
+  height: 35px;
+  border-radius: 8px;
+  background: transparent;
   display: flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 6px 16px rgba(78, 110, 242, 0.35);
+  box-shadow: none;
 }
-.logo-icon svg {
-  width: 22px;
-  height: 22px;
+.logo-icon img {
+  width: 35px;
+  height: 35px;
+  display: block;
 }
 .logo-text {
   display: flex;
@@ -159,52 +180,54 @@ onMounted(() => {
 }
 .logo-text b {
   font-size: 15px;
+  font-family:"Bahnschrift", "Microsoft YaHei UI", sans-serif;
   letter-spacing: -0.2px;
 }
 .logo-text span {
   font-size: 11px;
-  color: var(--faint);
+  color: var(--muted);
+  margin-top:4px;
 }
 
 .nav {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 4px;
   flex: 1;
 }
 .nav-item {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 9px 12px;
+  padding: 10px 12px;
   border-radius: var(--radius-sm);
   border: none;
   background: transparent;
   color: var(--muted);
-  font-size: 13.5px;
+  font-size: 13px;
   font-weight: 500;
   cursor: pointer;
   transition: all 0.16s;
   text-align: left;
 }
 .nav-item:hover {
-  background: var(--bg-soft);
+  background: var(--panel-2);
   color: var(--text);
 }
 .nav-item.active {
-  background: var(--accent-soft);
-  color: var(--accent);
+  background: var(--nav-active-bg);
+  color: var(--nav-active-text);
   font-weight: 600;
 }
 .nav-icon {
-  width: 17px;
-  height: 17px;
+  width: 16px;
+  height: 16px;
   flex-shrink: 0;
 }
 
 .sidebar-foot {
-  border-top: 1px solid var(--border-soft);
-  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  padding-top: 18px;
   font-size: 11px;
 }
 .lib-path {
@@ -226,19 +249,45 @@ onMounted(() => {
 }
 .lib-path .dot.ok {
   background: var(--green);
-  box-shadow: 0 0 6px rgba(18, 183, 106, 0.6);
+  box-shadow: none;
 }
 .ver {
   color: var(--faint);
-  padding: 6px 4px 0;
+  padding: 16px 4px 0;
+  display:flex;
+  justify-content:space-between;
+  font-size:10px;
 }
 
 .main {
   flex: 1;
+  min-width: 0;
   overflow: auto;
-  padding: 26px 30px;
+  padding: 0 32px 32px;
   position: relative;
 }
+.nav-caption { padding:0 12px 12px; color:var(--faint); font-size:11px; }
+.nav-count { margin-left:auto; background:var(--panel); color:var(--muted); padding:0 6px; border:1px solid var(--border); border-radius:4px; font:10px/17px "Consolas",monospace; }
+.nav-activity { width:5px; height:5px; margin-left:auto; background:var(--accent); border-radius:50%; }
+.nav-item.nav-management { margin-top:22px; }
+.nav-item.nav-settings { margin-top:auto; margin-bottom:16px; }
+.workspace-label { display:flex; gap:9px; align-items:center; margin-bottom:14px; }
+.workspace-symbol { width:30px; height:30px; display:grid; place-items:center; background:var(--panel); color:var(--text); border:1px solid var(--border); border-radius:7px; font:14px "Bahnschrift",sans-serif; }
+.workspace-label > div { display:flex; flex-direction:column; }
+.workspace-label b { font-size:12px; font-weight:500; color:var(--text); }
+.workspace-label > div > span { font-size:10px; color:var(--faint); margin-top:3px; }
+.workspace-bar { display:flex; align-items:center; justify-content:space-between; min-height:64px; margin:0 -32px 30px; padding:12px 32px; border-bottom:1px solid var(--border); background:var(--panel); color:var(--faint); font-size:12px; position:sticky; top:0; z-index:6; }
+.breadcrumb > span { margin:0 12px; color:#d4d4d8; }
+.breadcrumb b { color:var(--text); font-weight:500; }
+.workspace-tools { display:flex; align-items:center; gap:20px; }
+.local-status { display:flex; align-items:center; gap:6px; font-size:11px; }
+.local-status i { width:5px; height:5px; border-radius:50%; background:var(--green); }
+.appearance-switch { display:flex; align-items:center; gap:2px; border:1px solid var(--border); border-radius:7px; background:var(--bg-soft); padding:3px; }
+.appearance-switch button { display:flex; align-items:center; gap:6px; padding:4px 9px; font-size:11px; color:var(--muted); background:transparent; border:1px solid transparent; border-radius:4px; cursor:pointer; }
+.appearance-switch button.active { background:var(--panel); border-color:var(--border); color:var(--text); box-shadow:var(--shadow-sm); }
+.swatch { width:9px; height:9px; border-radius:50%; border:1px solid #00000015; }
+.swatch.mono { background:#27272a; }.swatch.blue { background:#3b82f6; }
+@media(max-width:1100px) { .sidebar { width:200px; } .main { padding-left:24px; padding-right:24px; } .workspace-bar { margin-left:-24px; margin-right:-24px; padding-left:24px; padding-right:24px; } .local-status { display:none; } }
 
 /* 扫描进度条：细长渐变条贴在主区顶部循环滑动 */
 .scan-bar {
