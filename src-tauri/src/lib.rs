@@ -1,6 +1,15 @@
 mod commands;
 mod models;
 
+#[cfg(all(not(debug_assertions), not(feature = "custom-protocol")))]
+compile_error!("Release 构建必须启用 custom-protocol，否则窗口会连接开发服务器");
+
+#[cfg(test)]
+#[test]
+fn default_build_uses_embedded_ui() {
+    assert!(!tauri::is_dev());
+}
+
 use commands::AppState;
 use std::sync::Mutex;
 use tauri::Manager;
@@ -19,6 +28,13 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::skill_sync::skill_sync_settings,
+            commands::skill_sync::save_skill_sync_settings,
+            commands::skill_sync::skill_sync_run,
+            commands::updates::update_settings,
+            commands::updates::save_update_settings,
+            commands::updates::check_app_update,
+            commands::updates::open_update_link,
             commands::get_sync_data,
             commands::scan_skills_cmd,
             commands::set_skills_root,
@@ -38,12 +54,15 @@ pub fn run() {
             commands::market_add_source,
             commands::market_remove_source,
             commands::market_list_ex,
+            commands::market_skill_detail,
             commands::market_install,
             commands::list_external_skills,
             commands::adopt_skill,
             commands::detect_builtin_sources,
             commands::builtin_source_skills,
             commands::adopt_builtin_skill,
+            commands::save_builtin_source,
+            commands::remove_builtin_source,
             commands::translate_text,
             commands::ensure_skill_icon,
             commands::read_skill_detail,
@@ -59,7 +78,19 @@ pub fn run() {
             commands::export_manifest,
             commands::import_manifest,
             commands::latest_manifest,
-            commands::reveal_path
+            commands::reveal_path,
+            commands::mcp::mcp_inventory,
+            commands::mcp::mcp_market_search,
+            commands::mcp::mcp_save_server,
+            commands::mcp::mcp_remove_server,
+            commands::mcp::mcp_save_binding,
+            commands::mcp::mcp_adopt_source,
+            commands::mcp::mcp_preview,
+            commands::mcp::mcp_preview_change,
+            commands::mcp_probe::mcp_probe_check,
+            commands::mcp_probe::mcp_probe_cancel,
+            commands::mcp::mcp_apply,
+            commands::mcp::mcp_restore
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -28,7 +28,7 @@ import {
 } from "../api/tauri";
 import type { SkillInfo, SkillDetail, TrashItem, SecurityReport } from "../types";
 import { useEsc } from "../composables/useEsc";
-import SkillGlyph from "../components/SkillGlyph.vue";
+import SkillIcon from "../components/SkillIcon.vue";
 
 // Esc 按弹窗层级关闭：全文预览 > 删除确认 > 技能详情
 useEsc(() => {
@@ -99,11 +99,6 @@ const filtered = computed(() => {
 function catCount(cat: string) {
   if (cat === "全部") return store.skills.length;
   return store.skills.filter((s) => s.category === cat).length;
-}
-
-// 官方图标优先，缺失或加载失败时使用统一线性图标。
-function onIconError(s: SkillInfo) {
-  s.icon_b64 = "";
 }
 
 // ---------- 英文描述翻译 ----------
@@ -268,17 +263,7 @@ onMounted(() => {
         @click="openDetail(s)"
       >
         <div class="skill-top">
-          <span class="skill-ico">
-            <img
-              v-if="s.icon_b64"
-              class="skill-ico-img"
-              :src="s.icon_b64"
-              alt=""
-              loading="lazy"
-              @error="onIconError(s)"
-            />
-            <SkillGlyph v-else :label="s.name + ' ' + s.description" />
-          </span>
+          <SkillIcon :name="s.name" :identity="s.key" :description="s.description" :src="s.icon_b64" />
           <span class="skill-name-wrap">
             <span class="skill-name">{{ s.name }}</span>
             <span class="skill-slug" v-if="s.key !== s.name" :title="s.key">{{ s.key }}</span>
@@ -338,18 +323,7 @@ onMounted(() => {
       <div class="modal">
         <div class="modal-head">
           <span class="detail-head">
-            <span
-              class="skill-ico"
-            >
-              <img
-                v-if="selected!.icon_b64"
-                class="skill-ico-img"
-                :src="selected!.icon_b64"
-                alt=""
-                @error="onIconError(selected!)"
-              />
-              <SkillGlyph v-else :label="selected!.name + ' ' + selected!.description" />
-            </span>
+            <SkillIcon :name="selected!.name" :identity="selected!.key" :description="selected!.description" :src="selected!.icon_b64" />
             <span class="detail-head-txt">
               <b style="font-size: 15px">{{ selected!.name }}</b>
               <code class="detail-key">{{ selected!.key }}</code>
@@ -561,34 +535,6 @@ h1 {
 .skill:hover {
   border-color: var(--accent);
   box-shadow: var(--shadow);
-}
-.skill-ico {
-  width: 34px;
-  height: 34px;
-  border-radius: 8px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 17px;
-  color: var(--muted);
-  background: var(--bg-soft);
-  border: 1px solid var(--border);
-  flex-shrink: 0;
-  box-shadow: none;
-  overflow: hidden;
-}
-.skill-ico :deep(svg) { width:18px; height:18px; }
-/* 展示官方原图：白底、去投影，避免自绘风格干扰官方视觉 */
-.skill-ico:has(.skill-ico-img) {
-  background: #fff;
-  border: 1px solid var(--border-soft);
-  box-shadow: none;
-}
-.skill-ico-img {
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-  display: block;
 }
 .skill-top {
   display: flex;

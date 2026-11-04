@@ -10,7 +10,7 @@ export interface SkillInfo {
   size_bytes: number;
   modified_ts: number;
   healthy: boolean;
-  /** 技能自带官方图标（data URL），空表示无，用 emoji 兜底 */
+  /** 技能自带图标（data URL），为空时自动生成彩色分类图标 */
   icon_b64: string;
   /** 版本号（frontmatter version / metadata.version），空表示未知 */
   version: string;
@@ -67,6 +67,7 @@ export interface MachineAgent {
   name: string;
   skills_dir: string;
   resolved_dir: string;
+  path_links: { path: string; target: string; scope: "directory" | "skill" }[];
   dir_exists: boolean;
   registered: boolean;
   known: boolean;
@@ -80,6 +81,13 @@ export interface MachineAgent {
   custom: boolean;
 }
 
+export interface CustomBuiltinSource {
+  id: string;
+  tool_name: string;
+  name: string;
+  skills_dir: string;
+}
+
 export interface BuiltinSource {
   id: string;
   name: string;
@@ -87,6 +95,9 @@ export interface BuiltinSource {
   skills_dir: string;
   resolved_dir: string;
   skill_count: number;
+  skill_dirs: string[];
+  cache_only: boolean;
+  custom?: boolean;
 }
 
 export interface MachineInventory {
@@ -131,6 +142,26 @@ export interface MarketSkill {
   icon_url: string;
   category: string;
   stars: number;
+}
+
+export interface MarketSkillDetail {
+  description: string;
+  version: string;
+  changelog: string;
+  owner_name: string;
+  publisher_source: string;
+  category: string;
+  downloads: number;
+  stars: number;
+  installs: number;
+  versions: number;
+  created_ts: number;
+  updated_ts: number;
+  requires_api_key: boolean | null;
+  pricing_type: string;
+  files: { path: string; size_bytes: number }[];
+  skill_md: string;
+  preview_error: string;
 }
 
 export interface ExternalSkill {
@@ -187,6 +218,7 @@ export interface AgentConfig {
 }
 
 export interface AppConfig {
+  builtin_sources?: CustomBuiltinSource[];
   skills_root: string;
   agents: AgentDef[];
   agent_preferences: Record<string, AgentPreference>;

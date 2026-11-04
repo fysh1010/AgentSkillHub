@@ -51,12 +51,42 @@ fn logical_key(path: &Path) -> String {
         .to_lowercase()
 }
 
+fn path_links(skills_dir: &Path) -> Vec<DirectoryLink> {
+    let mut links = Vec::new();
+    let mut ancestors: Vec<_> = skills_dir.ancestors().collect();
+    ancestors.reverse();
+    for path in ancestors {
+        if fs::symlink_metadata(path).is_ok_and(|md| md.file_type().is_symlink()) {
+            links.push(DirectoryLink {
+                path: path_text(path),
+                target: resolved(path),
+                scope: "directory".into(),
+            });
+        }
+    }
+    if let Ok(entries) = fs::read_dir(skills_dir) {
+        for entry in entries.flatten().take(2048) {
+            let path = entry.path();
+            if fs::symlink_metadata(&path).is_ok_and(|md| md.file_type().is_symlink()) {
+                links.push(DirectoryLink {
+                    path: path_text(&path),
+                    target: resolved(&path),
+                    scope: "skill".into(),
+                });
+            }
+        }
+    }
+    links
+}
+
 fn override_home(id: &str, env: &Environment) -> Option<PathBuf> {
     let variable = match id {
         "codex" => "CODEX_HOME",
         "claude" => "CLAUDE_CONFIG_DIR",
         "gemini" => "GEMINI_CLI_HOME",
         "openclaw" => "OPENCLAW_STATE_DIR",
+        "workbuddy" => "WORKBUDDY_CONFIG_DIR",
+        "qoder" | "qoder-cli" => "QODER_CONFIG_DIR",
         _ => return None,
     };
     env.get(variable)
@@ -71,6 +101,10 @@ pub fn skill_path(bases: &Bases, id: &str) -> Option<PathBuf> {
 fn skill_path_with_env(bases: &Bases, id: &str, env: &Environment) -> Option<PathBuf> {
     if let Some(root) = override_home(id, env) {
         return Some(root.join("skills"));
+    }
+    // 新安装遵循官方通用用户目录；保留已有 Codex 私有技能目录的兼容行为。
+    if id == "codex" && !bases.home.join(".codex/skills").is_dir() {
+        return Some(bases.home.join(".agents/skills"));
     }
     let agent = known_agents::KNOWN_AGENTS.iter().find(|a| a.id == id)?;
     if agent.rel.contains(&"*") {
@@ -540,6 +574,7 @@ fn inspect_agent(
         name,
         dir_exists: path.is_dir(),
         resolved_dir: resolved(&path),
+        path_links: if installed { path_links(&path) } else { Vec::new() },
         skills_dir: path_text(&path),
         registered,
         known,
@@ -647,23 +682,31 @@ fn valid_skill_dirs(root: &Path) -> Vec<PathBuf> {
         .flatten()
         .take(2048)
         .map(|e| e.path())
-        .filter(|p| p.is_dir() && p.join("SKILL.md").is_file())
+        .filter(|p| {
+            if !p.is_dir() || !p.join("SKILL.md").is_file()
+                || p.file_name().is_none_or(|n| n.to_string_lossy().starts_with(['.', '_'])) { return false; }
+            let (name, _, description, _, _) = scan::read_skill_md_pub(&p.join("SKILL.md"));
+            !name.is_empty() && !description.is_empty()
+        })
         .collect();
     dirs.sort();
     dirs
 }
 
 fn add_source(out: &mut Vec<BuiltinSource>, group: &str, name: &str, root: &Path) {
-    let count = valid_skill_dirs(root).len();
-    if count == 0
+    let skill_dirs: Vec<_> = valid_skill_dirs(root)
+        .iter()
+        .filter_map(|p| p.file_name().map(|name| name.to_string_lossy().into_owned()))
+        .collect();
+    if skill_dirs.is_empty()
         || out
             .iter()
-            .any(|s| key(Path::new(&s.skills_dir)) == key(root))
+            .any(|s| s.group == group && key(Path::new(&s.skills_dir)) == key(root))
     {
         return;
     }
     // 路径摘要使中文、插件版本和标点实例不再撞 ID；规范路径去重 Junction 别名。
-    let hash = key(root).bytes().fold(0xcbf29ce484222325u64, |h, b| {
+    let hash = format!("{}:{group}", key(root)).bytes().fold(0xcbf29ce484222325u64, |h, b| {
         (h ^ b as u64).wrapping_mul(0x100000001b3)
     });
     out.push(BuiltinSource {
@@ -672,117 +715,28 @@ fn add_source(out: &mut Vec<BuiltinSource>, group: &str, name: &str, root: &Path
         group: group.into(),
         skills_dir: path_text(root),
         resolved_dir: resolved(root),
-        skill_count: count,
+        skill_count: skill_dirs.len(),
+        skill_dirs,
+        cache_only: false,
+        custom: false,
     });
-}
-
-/// 仅在应用自身的插件包下有限下钻，不进入用户项目、连接器市场和网络缓存。
-fn bundled_roots(
-    out: &mut Vec<BuiltinSource>,
-    group: &str,
-    root: &Path,
-    depth: usize,
-    budget: &mut usize,
-    visited: &mut HashSet<String>,
-) {
-    if *budget == 0 || depth == 0 || !root.is_dir() || !visited.insert(key(root)) {
-        return;
-    }
-    *budget -= 1;
-    if root
-        .file_name()
-        .is_some_and(|n| n == "skills" || n == ".skills")
-    {
-        let parent = root.parent().unwrap_or(root);
-        let name = parent.file_name().unwrap_or_default().to_string_lossy();
-        let name = if name.chars().next().is_some_and(|c| c.is_ascii_digit()) && name.contains('.')
-        {
-            format!(
-                "{} / {}",
-                parent
-                    .parent()
-                    .and_then(Path::file_name)
-                    .unwrap_or_default()
-                    .to_string_lossy(),
-                name
-            )
-        } else {
-            name.into_owned()
-        };
-        add_source(out, group, &name, root);
-        return;
-    }
-    if let Ok(rd) = fs::read_dir(root) {
-        for e in rd.flatten().take(256) {
-            let name = e.file_name().to_string_lossy().into_owned();
-            if matches!(
-                name.as_str(),
-                "node_modules" | ".git" | "cache" | "logs" | "vendor" | "projects" | "sessions"
-            ) {
-                continue;
-            }
-            bundled_roots(out, group, &e.path(), depth - 1, budget, visited);
-        }
-    }
 }
 
 fn collect_sources(
     bases: &Bases,
-    installs: &[Installation],
+    _installs: &[Installation],
     env: &Environment,
 ) -> Vec<BuiltinSource> {
     let mut out = Vec::new();
-    for h in known_agents::detect_sources(bases) {
-        // marketplace 是可用插件的目录，不能将其冒充已安装技能。
-        if matches!(h.agent.id, "claude-plugins" | "claude-external-plugins") {
-            continue;
-        }
-        add_source(
-            &mut out,
-            h.agent.name,
-            h.instance.as_deref().unwrap_or(h.agent.name),
-            &h.path,
-        );
+    for hit in known_agents::detect_sources(bases) {
+        add_source(&mut out, hit.agent.name, "系统技能（只读）", &hit.path);
     }
-    for (id, group) in [("codex", "Codex"), ("claude", "Claude Code")] {
-        let root = override_home(id, env).unwrap_or_else(|| bases.home.join(format!(".{id}")));
-        add_source(&mut out, group, "系统技能", &root.join("skills/.system"));
-        let mut budget = 600;
-        bundled_roots(
-            &mut out,
-            group,
-            &root.join("plugins/cache"),
-            5,
-            &mut budget,
-            &mut HashSet::new(),
-        );
-    }
-    for (group, root) in [
-        ("WorkBuddy", bases.home.join(".workbuddy/app")),
-        ("WorkBuddy", bases.home.join(".workbuddy/plugins/cache")),
-        ("豆包", bases.home.join("Doubao/.skills")),
-    ] {
-        bundled_roots(&mut out, group, &root, 6, &mut 600, &mut HashSet::new());
-    }
-    for installation in installs {
-        let group = match installation.id.as_str() {
-            "workbuddy" => "WorkBuddy",
-            "doubao" => "豆包",
-            _ => continue,
-        };
-        for relative in [
-            "resources/app.asar.unpacked/resources/plugins",
-            "resources/app/resources/plugins",
-            "resources/skills",
-        ] {
-            bundled_roots(
-                &mut out,
-                group,
-                &installation.dir.join(relative),
-                7,
-                &mut 1000,
-                &mut HashSet::new(),
-            );
+    add_source(&mut out, "OpenAI Codex", "通用用户技能（官方目录）", &bases.home.join(".agents/skills"));
+    // 环境变量只覆盖该产品的显式目录，绝不扩展扫描范围。
+    for (id, name) in [("codex", "Codex 系统技能"), ("workbuddy", "WorkBuddy 系统技能")] {
+        if let Some(root) = override_home(id, env) {
+            out.retain(|source| source.group != name);
+            add_source(&mut out, name, "系统技能（只读）", &root.join("skills/.system"));
         }
     }
     out.sort_by(|a, b| (&a.group, &a.name).cmp(&(&b.group, &b.name)));
@@ -794,14 +748,19 @@ pub fn inventory(bases: &Bases, registered: &[AgentDef]) -> MachineInventory {
     let (mut installs, warnings) = system_installations();
     installs.extend(extension_installations(bases));
     installs.extend(common_installations(bases, &env));
-    let sources = collect_sources(bases, &installs, &env);
+    let agents = detect_with(bases, registered, &installs, &env);
+    let mut sources = collect_sources(bases, &installs, &env);
+    // 使用已经解析好的实际路径：尊重自定义位置，并覆盖按账号分目录的产品。
+    for agent in agents.iter().filter(|agent| !agent.shared) {
+        add_source(&mut sources, &agent.name, "用户安装 / 自定义技能", Path::new(&agent.skills_dir));
+    }
     *SOURCE_CACHE
         .get_or_init(|| Mutex::new(vec![]))
         .lock()
         .unwrap() = sources.clone();
     MachineInventory {
         home_dir: path_text(&bases.home),
-        agents: detect_with(bases, registered, &installs, &env),
+        agents,
         sources,
         warnings,
         scanned_at: super::now_ts(),
@@ -812,22 +771,54 @@ pub fn inventory(bases: &Bases, registered: &[AgentDef]) -> MachineInventory {
     }
 }
 
-pub fn source_dir(bases: &Bases, id: &str) -> Option<PathBuf> {
-    if let Some(source) = SOURCE_CACHE
+/// 手动来源复用标准技能解析；不执行插件，也不递归遍历安装目录。
+pub fn custom_source(config: &CustomBuiltinSource) -> Result<BuiltinSource, String> {
+    let root = Path::new(&config.skills_dir);
+    if config.tool_name.trim().is_empty() || config.name.trim().is_empty() {
+        return Err("请填写所属工具和来源名称".into());
+    }
+    if !root.is_absolute() || !root.is_dir() {
+        return Err("技能来源必须是已存在的绝对目录".into());
+    }
+    let mut sources = Vec::new();
+    add_source(&mut sources, config.tool_name.trim(), config.name.trim(), root);
+    let mut source = sources.pop().ok_or("未找到标准技能，请选择直接包含「技能名/SKILL.md」的父目录")?;
+    source.id = if config.id.is_empty() { format!("manual-{}", source.id) } else { config.id.clone() };
+    source.custom = true;
+    source.cache_only = false;
+    Ok(source)
+}
+
+pub fn append_custom_sources(inventory: &mut MachineInventory, configs: &[CustomBuiltinSource]) {
+    for config in configs {
+        match custom_source(config) {
+            Ok(source) => {
+                // 显式配置优先于同路径的自动结果，但不改变工具安装状态。
+                inventory.sources.retain(|s| key(Path::new(&s.skills_dir)) != key(Path::new(&source.skills_dir)));
+                inventory.sources.push(source);
+            }
+            Err(error) => inventory.warnings.push(format!("手动来源「{} / {}」：{error}", config.tool_name, config.name)),
+        }
+    }
+}
+
+pub fn source_by_id(bases: &Bases, id: &str) -> Option<BuiltinSource> {
+    let cached = SOURCE_CACHE
         .get_or_init(|| Mutex::new(vec![]))
         .lock()
         .unwrap()
         .iter()
         .find(|s| s.id == id)
-    {
-        let dir = PathBuf::from(&source.skills_dir);
-        return dir.is_dir().then_some(dir);
+        .cloned();
+    if let Some(source) = cached {
+        if Path::new(&source.skills_dir).is_dir() {
+            return Some(source);
+        }
     }
     inventory(bases, &[])
         .sources
         .into_iter()
         .find(|s| s.id == id)
-        .map(|s| PathBuf::from(s.skills_dir))
 }
 
 pub fn source_skills(dir: &Path) -> Vec<ExternalSkill> {
@@ -857,6 +848,14 @@ pub fn source_skills(dir: &Path) -> Vec<ExternalSkill> {
                 size_bytes: 0,
             }
         })
+        .collect()
+}
+
+pub fn selected_source_skills(source: &BuiltinSource) -> Vec<ExternalSkill> {
+    let selected: HashSet<_> = source.skill_dirs.iter().collect();
+    source_skills(Path::new(&source.skills_dir))
+        .into_iter()
+        .filter(|skill| selected.contains(&skill.dir_name))
         .collect()
 }
 
@@ -917,6 +916,58 @@ mod tests {
             format!("---\nname: {name}\ndescription: A real skill\n---\n"),
         )
         .unwrap();
+    }
+    #[test]
+    fn manual_sources_merge_without_installing_an_agent_and_survive_reload() {
+        let b = bases("manual_sources");
+        let root = b.home.join("office-skills");
+        make_skill(&root, "office-docx");
+        let config = CustomBuiltinSource {
+            id: String::new(), tool_name: "DeepSeek Harness".into(),
+            name: "Office 内置技能".into(), skills_dir: path_text(&root),
+        };
+        let checked = custom_source(&config).unwrap();
+        let mut saved = config;
+        saved.id = checked.id.clone();
+        let mut app = AppConfig::default();
+        app.builtin_sources.push(saved);
+        let reloaded: AppConfig = serde_json::from_str(&serde_json::to_string(&app).unwrap()).unwrap();
+        let mut inv = MachineInventory {
+            home_dir: path_text(&b.home), agents: vec![], sources: vec![],
+            warnings: vec![], scanned_at: 0, catalog_count: 0,
+        };
+        add_source(&mut inv.sources, "Automatic", "Office", &root);
+        append_custom_sources(&mut inv, &reloaded.builtin_sources);
+        assert_eq!(inv.sources.len(), 1);
+        assert!(inv.sources[0].custom);
+        assert_eq!(inv.sources[0].id, checked.id);
+        assert_eq!(selected_source_skills(&inv.sources[0])[0].dir_name, "office-docx");
+        assert!(inv.agents.is_empty());
+        // 目录失效时保留配置并报告问题，不把整个本机扫描变成失败。
+        app.builtin_sources[0].skills_dir = path_text(&b.home.join("missing"));
+        inv.sources.clear();
+        append_custom_sources(&mut inv, &app.builtin_sources);
+        assert!(inv.sources.is_empty());
+        assert_eq!(inv.warnings.len(), 1);
+        assert_eq!(app.builtin_sources.len(), 1);
+    }
+
+    #[test]
+    fn manual_source_requires_the_skill_parent_and_old_config_defaults_to_empty() {
+        let b = bases("manual_source_validation");
+        make_skill(&b.home.join("package/skills"), "diagram");
+        let mut config = CustomBuiltinSource {
+            id: String::new(), tool_name: "Harness".into(), name: "Plugin".into(),
+            skills_dir: path_text(&b.home),
+        };
+        assert!(custom_source(&config).is_err());
+        config.skills_dir = "relative/skills".into();
+        assert!(custom_source(&config).is_err());
+        config.skills_dir = path_text(&b.home.join("package/skills"));
+        assert!(custom_source(&config).is_ok());
+        let mut old = serde_json::to_value(AppConfig::default()).unwrap();
+        old.as_object_mut().unwrap().remove("builtin_sources");
+        assert!(serde_json::from_value::<AppConfig>(old).unwrap().builtin_sources.is_empty());
     }
     #[test]
     fn catalog_names_expand_system_detection_without_accepting_uninstallers() {
@@ -1005,7 +1056,7 @@ mod tests {
             skills_dir: path_text(&b.home.join("mine")),
             builtin: false,
         };
-        let items = detect_with(&b, &[configured.clone()], &[], &env);
+        let items = detect_with(&b, std::slice::from_ref(&configured), &[], &env);
         assert_eq!(items.iter().filter(|a| a.id == "codex").count(), 1);
         assert_eq!(items[0].skills_dir, configured.skills_dir);
     }
@@ -1024,6 +1075,12 @@ mod tests {
         let items = detect_with(&b, &[], &[], &Environment::new());
         assert!(items.iter().any(|a| a.id == "claude"));
         assert!(items.iter().any(|a| a.id == "codex"));
+        for product in [".claude", ".codex"] {
+            let links = path_links(&b.home.join(product).join("skills"));
+            assert!(links.iter().any(|link| link.scope == "directory"
+                && Path::new(&link.path).ends_with("skills")
+                && key(Path::new(&link.target)) == key(&shared)));
+        }
     }
     #[test]
     fn excludes_ime_updaters_and_distinguishes_china_editions() {
@@ -1039,7 +1096,7 @@ mod tests {
         assert_eq!(product_id("TRAE CN (User)"), Some("trae-cn"));
     }
     #[test]
-    fn finds_workbuddy_bundles_and_flattens_system_skills() {
+    fn ignores_plugin_bundles_and_lists_only_explicit_skill_roots() {
         let b = bases("discovery_bundles");
         let install = b.home.join("custom-install");
         make_skill(
@@ -1059,10 +1116,11 @@ mod tests {
             }],
             &Environment::new(),
         );
-        assert_eq!(sources.iter().map(|s| s.skill_count).sum::<usize>(), 3);
-        assert_eq!(sources.len(), 3);
+        assert_eq!(sources.iter().map(|s| s.skill_count).sum::<usize>(), 1);
+        assert_eq!(sources.len(), 1);
+        assert!(sources[0].skills_dir.ends_with(".system"));
         for source in sources {
-            assert_eq!(source_skills(Path::new(&source.skills_dir)).len(), 1);
+            assert_eq!(selected_source_skills(&source).len(), 1);
         }
     }
     #[test]
@@ -1114,7 +1172,7 @@ mod tests {
         for source in &inv.sources {
             assert!(source.skill_count > 0);
             assert_eq!(
-                source_skills(Path::new(&source.skills_dir)).len(),
+                selected_source_skills(source).len(),
                 source.skill_count
             );
         }

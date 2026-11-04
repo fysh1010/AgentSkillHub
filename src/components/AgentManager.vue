@@ -4,6 +4,7 @@ import { discovery, discoverMachine, loadAll, store, toast, ui } from "../store"
 import { revealPath, saveCustomAgent, setAgentManagement } from "../api/tauri";
 import { useEsc } from "../composables/useEsc";
 import type { MachineAgent } from "../types";
+import { mcpInventory, mcpSaveBinding, mcpFormats, type McpTarget } from "../api/mcp";
 
 const list = ref<"installed" | "uninstalled">("installed");
 const keyword = ref("");
@@ -11,7 +12,9 @@ const busy = ref("");
 const editing = ref(false);
 const originalId = ref("");
 const saving = ref(false);
-const form = reactive({ id:"", name:"", skills_dir:"", executable_path:"", enabled:true });
+const form = reactive({ id:"", name:"", skills_dir:"", executable_path:"", enabled:true, mcp_path:"", mcp_format:"json" });
+const mcpTargets = ref<McpTarget[]>([]);
+const bindingLoading = ref(false);
 useEsc(() => { if (!saving.value) editing.value = false; });
 
 const candidates = computed(() => (discovery.inventory?.agents || []).filter(a => !a.shared));
@@ -23,6 +26,7 @@ const visible = computed(() => (list.value === "installed" ? installed.value : u
 
 onMounted(() => {
   if (!discovery.inventory || Date.now()/1000 - discovery.inventory.scanned_at > 15) void discoverMachine();
+  void mcpInventory().then(data => mcpTargets.value = data.targets).catch(e => toast(String(e), "error"));
 });
 
 async function toggle(agent: MachineAgent, value: boolean) {
@@ -38,11 +42,18 @@ async function toggle(agent: MachineAgent, value: boolean) {
   finally { busy.value = ""; }
 }
 
-function openEditor(agent?: MachineAgent) {
+async function openEditor(agent?: MachineAgent) {
+  if (bindingLoading.value) return;
+  bindingLoading.value = true;
+  try { mcpTargets.value = (await mcpInventory()).targets; }
+  catch(e) { toast(`无法读取 MCP 配置位置：${e}`, "error"); return; }
+  finally { bindingLoading.value = false; }
   originalId.value = agent?.id || "";
   Object.assign(form, { id:agent?.id || "", name:agent?.name || "", skills_dir:agent?.skills_dir || "",
     executable_path:agent?.executable_path || store.config?.agent_preferences?.[agent?.id || ""]?.executable_path || "",
-    enabled:agent?.management_enabled ?? true });
+    enabled:agent?.management_enabled ?? true,
+    mcp_path:mcpTargets.value.find(t => t.agent_id === agent?.id)?.binding?.path || "",
+    mcp_format:mcpTargets.value.find(t => t.agent_id === agent?.id)?.binding?.format || "json" });
   if (agent && !agent.installed) form.enabled = true;
   editing.value = true;
 }
@@ -56,10 +67,19 @@ async function save() {
   }
   saving.value = true;
   try {
+    const previousBinding = mcpTargets.value.find(t => t.agent_id === id)?.binding;
+    const bindingChanged = !!form.mcp_path.trim() && (previousBinding?.path !== form.mcp_path.trim() || previousBinding?.format !== form.mcp_format);
+    if (bindingChanged && !form.enabled) throw new Error("更改 MCP 配置位置前，请勾选允许配置此工具");
     store.config = await saveCustomAgent({ id, name:form.name.trim(), skills_dir:form.skills_dir.trim(), builtin:false }, form.executable_path.trim(), form.enabled);
+    originalId.value = id;
+    await discoverMachine();
+    if (bindingChanged) {
+      try { await mcpSaveBinding({agent_id:id, path:form.mcp_path.trim(), format:form.mcp_format}); }
+      catch(e) { throw new Error(`Agent 与 Skills 路径已保存，MCP 位置未保存：${e}`); }
+    }
+    mcpTargets.value = (await mcpInventory()).targets;
     editing.value = false;
     list.value = "installed";
-    await discoverMachine();
     toast("自定义路径已保存", "success");
   } catch(e) { toast(String(e),"error"); }
   finally { saving.value = false; }
@@ -100,6 +120,9 @@ function evidenceLabel(agent: MachineAgent) {
         <div class="tool-content">
           <div class="tool-title"><h3>{{ agent.name }}</h3><span class="badge" :class="agent.installed ? agent.custom ? 'gray' : 'green' : 'gray'">{{ agent.installed ? agent.custom ? '手动确认' : '已安装' : agent.confidence === 'missing' ? '未安装' : '待确认' }}</span></div>
           <div class="tool-path"><span>Skills</span><code :title="agent.skills_dir">{{ agent.skills_dir }}</code><button v-if="agent.dir_exists" class="path-link" title="打开技能目录" @click="openPath(agent.skills_dir)">↗</button></div>
+          <div class="tool-path"><span>MCP</span><code>{{ mcpTargets.find(t => t.agent_id === agent.id)?.binding?.path || '尚未绑定，可在编辑路径中指定' }}</code></div>
+          <div v-for="link in agent.path_links.filter(item => item.scope === 'directory')" :key="link.path" class="tool-link-map"><span>路径联接</span><code :title="link.path">{{ link.path }}</code><span>→ 实际目录</span><code :title="link.target">{{ link.target }}</code></div>
+          <details v-if="agent.path_links.some(item => item.scope === 'skill')" class="tool-skill-links"><summary>{{ agent.path_links.filter(item => item.scope === 'skill').length }} 个技能目录链接 · 查看实际目标</summary><div v-for="link in agent.path_links.filter(item => item.scope === 'skill')" :key="link.path" class="tool-link-map"><code :title="link.path">{{ link.path }}</code><span>→</span><code :title="link.target">{{ link.target }}</code></div></details>
           <p v-if="agent.installed" class="tool-evidence" :title="agent.executable_path">{{ evidenceLabel(agent) }}<span v-if="!agent.dir_exists"> · 技能目录将在部署时创建</span></p>
           <p v-else class="tool-evidence">{{ agent.confidence === 'missing' ? '没有检测到程序安装证据' : '配置目录可能是历史残留，尚未确认程序已安装' }}</p>
         </div>
@@ -124,6 +147,9 @@ function evidenceLabel(agent: MachineAgent) {
           <label>工具名称<input v-model="form.name" class="input" required placeholder="例如 My Agent" /></label>
           <label>唯一 ID<input v-model="form.id" class="input" required :readonly="!!originalId" pattern="[a-zA-Z0-9_-]+" placeholder="例如 my-agent" /></label>
           <label>Skills 目录<input v-model="form.skills_dir" class="input" required placeholder="技能目录的绝对路径" /></label>
+          <label>MCP 配置文件 <span class="optional">可选，填写完整文件路径</span><input v-model="form.mcp_path" class="input" placeholder="例如 D:/MyAgent/mcp.json" /></label>
+          <label v-if="form.mcp_path">MCP 配置格式<select v-model="form.mcp_format" class="input"><option v-for="format in mcpFormats" :key="format.id" :value="format.id">{{ format.name }}</option></select></label>
+          <p class="custom-help">Skills 目录只管理标准技能。MCP 请选原工具实际使用的用户配置文件和对应格式；未知格式不能保证写入后被工具识别。清空 MCP 路径保留既有绑定。</p>
           <label>程序文件路径 <span class="optional">技能目录不存在时必填</span><input v-model="form.executable_path" class="input" placeholder="本机可执行文件的绝对路径" /></label>
           <label class="custom-enable"><input v-model="form.enabled" type="checkbox" />保存后允许本软件配置此工具</label>
         </div>
@@ -144,6 +170,7 @@ function evidenceLabel(agent: MachineAgent) {
 .agent-settings-list { border:1px solid var(--border); border-radius:10px; overflow:hidden; }.agent-settings-row { display:flex; gap:14px; align-items:center; padding:20px; border-bottom:1px solid var(--border-soft); }.agent-settings-row:last-child { border-bottom:0; }.agent-settings-row:hover { background:var(--bg-soft); }
 .tool-avatar { width:38px; height:38px; border:1px solid var(--border); border-radius:9px; background:var(--panel); display:grid; place-items:center; font:500 12px "Bahnschrift",sans-serif; flex-shrink:0; }.tool-content { flex:1; min-width:0; }.tool-title { gap:10px; margin-bottom:7px; }.tool-title h3 { font-size:13px; font-weight:600; }.tool-title .badge { font-size:10px; }
 .tool-path { gap:8px; min-width:0; }.tool-path > span { font-size:10px; color:var(--faint); }.tool-path code { font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--muted); }.path-link { border:0; background:none; color:var(--accent); cursor:pointer; font-size:14px; flex-shrink:0; }
+.tool-link-map { display:flex; align-items:baseline; flex-wrap:wrap; gap:4px 8px; margin-top:7px; font-size:10px; color:var(--muted); }.tool-link-map code { font-size:10px; color:var(--text); overflow-wrap:anywhere; }.tool-skill-links { margin-top:8px; color:var(--muted); font-size:10px; }.tool-skill-links summary { cursor:pointer; width:max-content; max-width:100%; color:var(--accent); }.tool-skill-links .tool-link-map { padding:4px 0 4px 10px; border-left:1px solid var(--border); }
 .tool-evidence { margin-top:5px; color:var(--faint); font-size:10px; }.tool-actions { gap:24px; flex-shrink:0; }.tool-edit { font-size:11px; border:0; background:none; cursor:pointer; color:var(--muted); }.tool-edit:hover { color:var(--accent); text-decoration:underline; }.management-control { min-width:121px; justify-content:flex-end; gap:10px; font-size:11px; color:var(--muted); }.management-switch { width:34px; height:20px; padding:2px; border:1px solid #d4d4d8; border-radius:12px; background:#d4d4d8; cursor:pointer; flex-shrink:0; }.management-switch span { display:block; width:14px; height:14px; background:#fff; border-radius:50%; box-shadow:0 1px 2px #0002; transition:transform .15s; }.management-switch.on { background:var(--accent); border-color:var(--accent); }.management-switch.on span { transform:translateX(14px); }.unavailable-label { font-size:11px; color:var(--faint); min-width:121px; text-align:right; }
 .manager-footer { margin-top:18px; color:var(--faint); font-size:11px; }.manager-error { color:var(--red); background:var(--red-soft); padding:12px; margin-bottom:12px; border-radius:7px; display:flex; justify-content:space-between; }.manager-warning { color:var(--amber); background:var(--amber-soft); border-radius:6px; padding:10px; font-size:12px; margin-bottom:10px; }
 .custom-agent-modal { max-width:560px; }.custom-help { color:var(--muted); font-size:12px; margin-bottom:18px; line-height:1.8; }.custom-agent-modal .modal-body > label { display:block; font-size:12px; margin-top:14px; }.custom-agent-modal .input { margin-top:6px; }.custom-agent-modal .custom-enable { display:flex !important; align-items:center; gap:8px; }.optional { margin-left:8px; color:var(--faint); font-size:10px; }

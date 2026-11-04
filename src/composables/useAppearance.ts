@@ -1,11 +1,20 @@
 import { readonly, ref } from "vue";
 
-export type Appearance = "monochrome" | "blue";
+export const appearanceOptions = [
+  { id: "monochrome", name: "黑白", color: "#27272a" },
+  { id: "blue", name: "蓝白", color: "#3b82f6" },
+  { id: "latte", name: "Catppuccin Latte", color: "#8839ef" },
+  { id: "mocha", name: "Catppuccin Mocha", color: "#cba6f7" },
+  { id: "tokyo", name: "Tokyo Night", color: "#7aa2f7" },
+  { id: "nord", name: "Nord", color: "#88c0d0" },
+] as const;
+export type Appearance = typeof appearanceOptions[number]["id"];
 const storageKey = "agentskillhub.appearance";
 
 function loadAppearance(): Appearance {
   try {
-    return localStorage.getItem(storageKey) === "blue" ? "blue" : "monochrome";
+    const saved = localStorage.getItem(storageKey);
+    return appearanceOptions.some(option => option.id === saved) ? saved as Appearance : "monochrome";
   } catch {
     return "monochrome";
   }

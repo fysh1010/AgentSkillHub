@@ -1,0 +1,578 @@
+[
+  {
+    "agent_id": "codex",
+    "path": "$CODEX_HOME/config.toml",
+    "format": "codex",
+    "docs_url": "https://learn.chatgpt.com/docs/extend/mcp?surface=cli",
+    "notes": "用户级配置在 CLI、桌面及扩展间共享。修改后重新加载 MCP。",
+    "checked_at": "2026-11-04",
+    "status": "adapted"
+  },
+  {
+    "agent_id": "claude",
+    "path": "~/.claude.json",
+    "format": "json",
+    "docs_url": "https://code.claude.com/docs/en/mcp",
+    "notes": "用户级 mcpServers；项目配置 .mcp.json 与用户级配置分开。支持 CLAUDE_CONFIG_DIR。",
+    "checked_at": "2026-11-04",
+    "status": "adapted"
+  },
+  {
+    "agent_id": "workbuddy",
+    "path": "$WORKBUDDY_CONFIG_DIR/mcp.json",
+    "format": "json",
+    "docs_url": "https://www.codebuddy.cn/docs/workbuddy/From-Beginner-to-Expert-Guide/Function-Description/MCP-Guide",
+    "notes": "默认 ~/.workbuddy/mcp.json。新增后在 WorkBuddy 内信任服务；不修改信任或 OAuth 状态。",
+    "checked_at": "2026-11-04",
+    "status": "adapted"
+  },
+  {
+    "agent_id": "zcode",
+    "path": "~/.zcode/cli/config.json",
+    "format": "zcode",
+    "docs_url": "https://zcode.z.ai/en/docs/mcp-services",
+    "notes": "服务位于 mcp.servers；字段校验严格。",
+    "checked_at": "2026-11-04",
+    "status": "adapted"
+  },
+  {
+    "agent_id": "qoder",
+    "path": "~/.qoder/settings.json",
+    "format": "json",
+    "docs_url": "https://docs.qoder.com/qoder/connectors",
+    "notes": "用户级 mcpServers；IDE 与 CLI 共享目录，支持 QODER_CONFIG_DIR。是否自动重连需在原工具中确认。",
+    "checked_at": "2026-11-04",
+    "status": "adapted"
+  },
+  {
+    "agent_id": "qoder-cn",
+    "path": "~/.qoder-cn/settings.json",
+    "format": "json",
+    "docs_url": "https://docs.qoder.cn/cli/mcp-reference",
+    "notes": "国内版独立目录；不读取运行时 mcp-router.json。",
+    "checked_at": "2026-10-25",
+    "status": "adapted"
+  },
+  {
+    "agent_id": "qoder-cli",
+    "path": "~/.qoder/settings.json",
+    "format": "json",
+    "docs_url": "https://docs.qoder.com/cli/mcp-reference",
+    "notes": "CLI 与 IDE 使用 ~/.qoder；支持 QODER_CONFIG_DIR。MCP 修改需要重启 CLI；共用配置文件的 Agent 不能独立覆盖对方。",
+    "checked_at": "2026-11-04",
+    "status": "adapted"
+  },
+  {
+    "agent_id": "cursor",
+    "path": "~/.cursor/mcp.json",
+    "format": "json",
+    "docs_url": "https://cursor.com/docs/context/mcp",
+    "notes": "用户级和项目级 .cursor/mcp.json 合并，项目优先。",
+    "checked_at": "2026-10-25",
+    "status": "adapted"
+  },
+  {
+    "agent_id": "windsurf",
+    "path": "~/.codeium/windsurf/mcp_config.json",
+    "format": "json",
+    "docs_url": "https://docs.windsurf.com/windsurf/cascade/mcp",
+    "notes": "此路径适用于 Windsurf / Cascade。新版 Devin Local 使用 Devin CLI 的独立配置，请从应用中核对后绑定。",
+    "checked_at": "2026-10-25",
+    "status": "adapted"
+  },
+  {
+    "agent_id": "gemini",
+    "path": "~/.gemini/settings.json",
+    "format": "gemini",
+    "docs_url": "https://geminicli.com/docs/tools/mcp-server/",
+    "notes": "mcpServers；HTTP 使用 httpUrl，SSE 使用 url。运行时停用另存于 mcp-server-enablement.json，由 Gemini 管理。",
+    "checked_at": "2026-10-25",
+    "status": "adapted"
+  },
+  {
+    "agent_id": "qwen",
+    "path": "~/.qwen/settings.json",
+    "format": "gemini",
+    "docs_url": "https://qwenlm.github.io/qwen-code-docs/en/users/features/mcp/",
+    "notes": "mcpServers；HTTP 使用 httpUrl，SSE 使用 url。",
+    "checked_at": "2026-10-25",
+    "status": "adapted"
+  },
+  {
+    "agent_id": "iflow",
+    "path": "~/.iflow/settings.json",
+    "format": "gemini",
+    "docs_url": "https://platform.iflow.cn/en/cli/examples/mcp",
+    "notes": "用户级 mcpServers，与项目级配置分开。",
+    "checked_at": "2026-10-25",
+    "status": "adapted"
+  },
+  {
+    "agent_id": "copilot",
+    "path": "$COPILOT_HOME/mcp-config.json",
+    "format": "copilot",
+    "docs_url": "https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers",
+    "notes": "默认 ~/.copilot；本地 type=local，需要 tools。VS Code 的 mcp.json 不由 CLI 直接读取。",
+    "checked_at": "2026-10-25",
+    "status": "adapted"
+  },
+  {
+    "agent_id": "cline",
+    "path": "~/.cline/data/settings/cline_mcp_settings.json",
+    "format": "cline",
+    "docs_url": "https://docs.cline.bot/mcp/mcp-overview",
+    "notes": "CLI 支持 CLINE_MCP_SETTINGS_PATH，transport 为对象；IDE 扩展另有自己的文件，优先使用实际检测到的来源。",
+    "checked_at": "2026-10-25",
+    "status": "adapted"
+  },
+  {
+    "agent_id": "roo",
+    "path": "$APPDATA/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json",
+    "format": "json",
+    "docs_url": "https://roocodeinc.github.io/Roo-Code/features/mcp/using-mcp-in-roo/",
+    "notes": "Roo MCP 面板可打开全局配置；同时扫描不同编辑器和 profiles。",
+    "checked_at": "2026-10-25",
+    "status": "adapted"
+  },
+  {
+    "agent_id": "kiro",
+    "path": "~/.kiro/settings/mcp.json",
+    "format": "json",
+    "docs_url": "https://kiro.dev/docs/mcp/configuration/",
+    "notes": "用户级 mcpServers；Agent 和项目配置可能覆盖全局。",
+    "checked_at": "2026-10-25",
+    "status": "adapted"
+  },
+  {
+    "agent_id": "kimi-code",
+    "path": "~/.kimi-code/mcp.json",
+    "format": "kimi",
+    "docs_url": "https://moonshotai.github.io/kimi-cli/en/customization/mcp",
+    "notes": "同时识别旧版 ~/.kimi/mcp.json；支持 KIMI_CODE_HOME / KIMI_SHARE_DIR，远程 transport 使用 http 或 sse。",
+    "checked_at": "2026-10-25",
+    "status": "adapted"
+  },
+  {
+    "agent_id": "codebuddy",
+    "path": "~/.codebuddy/.mcp.json",
+    "format": "json",
+    "docs_url": "https://www.codebuddy.ai/docs/cli/release-notes/v2.119.3",
+    "notes": "按实际存在的 .mcp.json、mcp.json、~/.codebuddy.json 选择。",
+    "checked_at": "2026-10-25",
+    "status": "adapted"
+  },
+  {
+    "agent_id": "opencode",
+    "path": "~/.config/opencode/opencode.json",
+    "format": "opencode",
+    "docs_url": "https://opencode.ai/docs/mcp-servers/",
+    "notes": "顶层 mcp；local 的 command 为数组，remote 使用 url；支持 JSONC 和 XDG_CONFIG_HOME。",
+    "checked_at": "2026-10-25",
+    "status": "adapted"
+  },
+  {
+    "agent_id": "kilo",
+    "path": "~/.config/kilo/kilo.jsonc",
+    "format": "opencode",
+    "docs_url": "https://kilo.ai/docs/automate/mcp/using-in-kilo-code",
+    "notes": "新版 Kilo 使用顶层 mcp；旧扩展配置只作为额外来源展示。",
+    "checked_at": "2026-10-25",
+    "status": "adapted"
+  },
+  {
+    "agent_id": "antigravity",
+    "path": "~/.gemini/config/mcp_config.json",
+    "format": "antigravity",
+    "docs_url": "https://www.antigravity.google/docs/mcp",
+    "notes": "新版 IDE / CLI 共用配置；远程端点字段为 serverUrl。旧目录另行只读发现。",
+    "checked_at": "2026-10-25",
+    "status": "adapted"
+  },
+  {
+    "agent_id": "antigravity-cli",
+    "path": "~/.gemini/config/mcp_config.json",
+    "format": "antigravity",
+    "docs_url": "https://www.antigravity.google/docs/mcp",
+    "notes": "与新版 Antigravity IDE 共用配置；不把旧 antigravity 目录当成新版默认。",
+    "checked_at": "2026-10-25",
+    "status": "adapted"
+  },
+  {
+    "agent_id": "grok",
+    "path": "$GROK_HOME/config.toml",
+    "format": "grok",
+    "docs_url": "https://docs.x.ai/build/settings",
+    "notes": "默认 ~/.grok/config.toml；mcp_servers。",
+    "checked_at": "2026-10-25",
+    "status": "adapted"
+  },
+  {
+    "agent_id": "junie",
+    "path": "~/.junie/mcp/mcp.json",
+    "format": "json",
+    "docs_url": "https://junie.jetbrains.com/docs/junie-cli-mcp-configuration.html",
+    "notes": "用户级配置与项目级 .junie/mcp/mcp.json 分开。",
+    "checked_at": "2026-10-25",
+    "status": "adapted"
+  },
+  {
+    "agent_id": "cortex",
+    "path": "~/.snowflake/cortex/mcp.json",
+    "format": "json",
+    "docs_url": "https://docs.snowflake.com/en/user-guide/cortex-code/cortex-code-desktop/mcp-support",
+    "notes": "用户级 mcpServers，支持设置面板中的表单与 JSON 配置。",
+    "checked_at": "2026-10-25",
+    "status": "adapted"
+  },
+  {
+    "agent_id": "deepagents",
+    "path": "~/.deepagents/.mcp.json",
+    "format": "json",
+    "docs_url": "https://github.com/langchain-ai/docs/blob/main/src/oss/deepagents/code/mcp-tools.mdx",
+    "notes": "用户级配置；项目配置需要单独信任，不自动批准项目来源。",
+    "checked_at": "2026-10-25",
+    "status": "adapted"
+  },
+  {
+    "agent_id": "factory",
+    "path": "~/.factory/mcp.json",
+    "format": "json",
+    "docs_url": "https://docs.factory.com/cli/configuration/mcp",
+    "notes": "Factory Droid 的用户级 MCP 配置。",
+    "checked_at": "2026-10-25",
+    "status": "adapted"
+  },
+  {
+    "agent_id": "posit",
+    "path": "~/.posit/assistant/settings.json",
+    "format": "posit",
+    "docs_url": "https://assistant.posit.co/docs/reference/config-file/",
+    "notes": "顶层 mcpServers；local 的 command 为数组，environment 保存环境变量，remote 使用 url。",
+    "checked_at": "2026-10-25",
+    "status": "adapted"
+  },
+  {
+    "agent_id": "kimchi",
+    "path": "~/.config/kimchi/harness/mcp.json",
+    "format": "json",
+    "docs_url": "https://docs.kimchi.dev/docs/coding-mcp-servers",
+    "notes": "通过 Kimchi MCP 面板或 CLI 导入，使用 mcpServers。",
+    "checked_at": "2026-10-25",
+    "status": "adapted"
+  },
+  {
+    "agent_id": "claude-desktop",
+    "path": "$APPDATA/Claude/claude_desktop_config.json",
+    "format": "desktop",
+    "docs_url": "https://py.sdk.modelcontextprotocol.io/get-started/real-host/",
+    "notes": "本地文件只配置 STDIO；远程连接器在 Claude Desktop 内管理。",
+    "checked_at": "2026-10-25",
+    "status": "adapted"
+  },
+  {
+    "agent_id": "hermes-agent",
+    "path": "~/.hermes/config.yaml",
+    "format": "",
+    "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp/",
+    "notes": "YAML mcp_servers；当前提供配置指南，不自动改写 YAML。",
+    "checked_at": "2026-10-25",
+    "status": "guide"
+  },
+  {
+    "agent_id": "goose",
+    "path": "~/.config/goose/config.yaml",
+    "format": "",
+    "docs_url": "https://block.github.io/goose/docs/guides/config-files/",
+    "notes": "YAML extensions；通过 Goose 的 Extensions 或 goose configure 管理。",
+    "checked_at": "2026-10-25",
+    "status": "guide"
+  },
+  {
+    "agent_id": "continue",
+    "path": "~/.continue/config.yaml",
+    "format": "",
+    "docs_url": "https://docs.continue.dev/reference",
+    "notes": "YAML mcpServers 为列表，当前使用 Continue 面板配置，不套用 JSON 对象。",
+    "checked_at": "2026-10-25",
+    "status": "guide"
+  },
+  {
+    "agent_id": "crush",
+    "path": "~/.config/crush/crush.json",
+    "format": "crush",
+    "docs_url": "https://github.com/charmbracelet/crush/blob/main/internal/skills/builtin/crush-config/SKILL.md",
+    "notes": "JSON 顶层 mcp；crushrc 也可定义配置，本应用不执行或改写 Bash 配置。",
+    "checked_at": "2026-10-25",
+    "status": "adapted"
+  },
+  {
+    "agent_id": "autohand-code",
+    "path": "~/.autohand/config.json",
+    "format": "",
+    "docs_url": "https://docs.autohand.ai/working-with-autohand-code/mcp-servers",
+    "notes": "mcp.servers 为数组，当前提供指南，不套用 Zcode 的对象格式。",
+    "checked_at": "2026-10-25",
+    "status": "guide"
+  },
+  {
+    "agent_id": "pochi",
+    "path": "~/.pochi/config.jsonc",
+    "format": "pochi",
+    "docs_url": "https://docs.getpochi.com/mcp/",
+    "notes": "顶层 mcp，保留其他配置。",
+    "checked_at": "2026-10-25",
+    "status": "adapted"
+  },
+  {
+    "agent_id": "aider-desk",
+    "path": "~/.aider-desk/mcp-servers.json",
+    "format": "",
+    "docs_url": "https://github.com/hotovo/aider-desk/discussions/901",
+    "notes": "已确认独立配置文件；版本字段结构未完成适配，请在 MCP 设置面板管理。",
+    "checked_at": "2026-10-25",
+    "status": "guide"
+  },
+  {
+    "agent_id": "rovodev",
+    "path": "~/.rovodev/mcp.json",
+    "format": "",
+    "docs_url": "https://support.atlassian.com/rovo/docs/use-rovo-dev-in-the-ide/",
+    "notes": "已确认路径；请在 Rovo Dev 中管理，当前未验证完整 schema。",
+    "checked_at": "2026-10-25",
+    "status": "guide"
+  },
+  {
+    "agent_id": "vibe",
+    "path": "~/.vibe/config.toml",
+    "format": "",
+    "docs_url": "https://docs.mistral.ai/vibe/code/cli/mcp-servers",
+    "notes": "TOML mcp_servers 使用 Vibe 自身 schema，暂不自动转换。",
+    "checked_at": "2026-10-25",
+    "status": "guide"
+  },
+  {
+    "agent_id": "codeartsdoer",
+    "path": "~/.codeartsdoer/codearts_cli.jsonc",
+    "format": "",
+    "docs_url": "https://support.huaweicloud.com/intl/zh-cn/usermanual-cli/codeartsagent_cli_0028.html",
+    "notes": "官方确认用户级文件位置；请使用 codearts mcp add 管理。未核实完整字段 schema，不自动套用 OpenCode 格式。",
+    "checked_at": "2026-10-25",
+    "status": "guide"
+  },
+  {
+    "agent_id": "jazz",
+    "path": "~/.agents/mcp.json",
+    "format": "",
+    "docs_url": "https://jazz-cli.vercel.app/docs/configure/mcp",
+    "notes": "配置在通用 .agents 目录，信任与启用另存 ~/.jazz/config.json；当前通过 Jazz 管理。",
+    "checked_at": "2026-10-25",
+    "status": "guide"
+  },
+  {
+    "agent_id": "openclaw",
+    "path": "~/.openclaw/openclaw.json",
+    "format": "",
+    "docs_url": "https://docs.openclaw.ai/slash-commands",
+    "notes": "使用 /mcp 或 OpenClaw 设置；嵌入 Agent 的配置不等同于网关 MCP。",
+    "checked_at": "2026-10-25",
+    "status": "guide"
+  },
+  {
+    "agent_id": "astrbot",
+    "path": "",
+    "format": "",
+    "docs_url": "https://docs.astrbot.app/use/mcp.html",
+    "notes": "WebUI → 插件 → MCP；数据库/部署目录由实例决定。",
+    "checked_at": "2026-10-25",
+    "status": "app"
+  },
+  {
+    "agent_id": "lingxi",
+    "path": "",
+    "format": "",
+    "docs_url": "https://www.lingxi.cn/docs",
+    "notes": "应用内「设置 → 连接器管理」，当前未确认稳定的外部文件格式。",
+    "checked_at": "2026-10-25",
+    "status": "app"
+  },
+  {
+    "agent_id": "trae",
+    "path": "",
+    "format": "",
+    "docs_url": "https://docs.trae.cn/ide_add-mcp-servers",
+    "notes": "设置 → MCP → 原始配置（JSON）可打开真实用户文件；绑定实际路径后管理，不猜测私有目录。",
+    "checked_at": "2026-10-25",
+    "status": "app"
+  },
+  {
+    "agent_id": "trae-cn",
+    "path": "",
+    "format": "",
+    "docs_url": "https://docs.trae.cn/ide_add-mcp-servers",
+    "notes": "设置 → MCP → 原始配置（JSON）；项目级 .trae/mcp.json 与用户级分开。",
+    "checked_at": "2026-10-25",
+    "status": "app"
+  },
+  {
+    "agent_id": "lingma",
+    "path": "",
+    "format": "",
+    "docs_url": "https://help.aliyun.com/zh/lingma/agent",
+    "notes": "产品已转向 Qoder CN；使用 Qoder CN MCP 面板，旧版本路径不混用。",
+    "checked_at": "2026-10-25",
+    "status": "app"
+  },
+  {
+    "agent_id": "doubao",
+    "path": "",
+    "format": "",
+    "docs_url": "https://www.doubao.com/",
+    "notes": "技能·连接器·伙伴 → 新建自定义连接器；未查到可核实的外部文件 schema。",
+    "checked_at": "2026-10-25",
+    "status": "app"
+  },
+  {
+    "agent_id": "minimax",
+    "path": "",
+    "format": "",
+    "docs_url": "https://agent.minimaxi.com/about",
+    "notes": "通过插件/连接器管理，未确认稳定的用户级独立 MCP 文件。",
+    "checked_at": "2026-10-25",
+    "status": "app"
+  },
+  {
+    "agent_id": "meituan-catpaw",
+    "path": "",
+    "format": "",
+    "docs_url": "https://catpaw.meituan.com/docs",
+    "notes": "通过妙手 MCP 连接器界面配置；当前未确认外部文件 schema。",
+    "checked_at": "2026-10-25",
+    "status": "app"
+  },
+  {
+    "agent_id": "augment",
+    "path": "",
+    "format": "",
+    "docs_url": "https://docs.augmentcode.com/",
+    "notes": "使用 Augment MCP 设置；当前未确认该已识别版本的用户文件 schema。",
+    "checked_at": "2026-10-25",
+    "status": "app"
+  },
+  {
+    "agent_id": "tabnine",
+    "path": "~/.tabnine/mcp_servers.json",
+    "format": "",
+    "docs_url": "https://docs.tabnine.com/main/getting-started/tabnine-agent/agent-settings",
+    "notes": "Tools and MCPs → MCP servers 打开实际文件；CLI/IDE 版本位置可能不同，暂不自动绑定。",
+    "checked_at": "2026-10-25",
+    "status": "guide"
+  },
+  {
+    "agent_id": "zencoder",
+    "path": "",
+    "format": "",
+    "docs_url": "https://docs.zencoder.ai/",
+    "notes": "使用 Zencoder MCP 设置；当前未确认用户级外部文件格式。",
+    "checked_at": "2026-10-25",
+    "status": "app"
+  },
+  {
+    "agent_id": "devin",
+    "path": "~/.devin/mcp_config.json",
+    "format": "",
+    "docs_url": "https://github.com/yetone/magpie/blob/main/internal/library/targets.go",
+    "notes": "Magpie 源码提供位置线索；未取得足够的 Devin 官方文件 schema，不自动写入。",
+    "checked_at": "2026-10-25",
+    "status": "guide"
+  },
+  {
+    "agent_id": "pi",
+    "path": "~/.pi/agent/mcp.json",
+    "format": "",
+    "docs_url": "https://github.com/badlogic/pi-mono",
+    "notes": "Pi 不同发行版/扩展的 MCP 格式不同；请通过所装扩展或当前版本配置，不猜测。",
+    "checked_at": "2026-10-25",
+    "status": "guide"
+  },
+  {
+    "agent_id": "inference-sh",
+    "path": "",
+    "format": "",
+    "docs_url": "https://inference.sh/docs/connectors/mcp-server",
+    "notes": "平台提供 MCP 代理/连接工具；没有核实通用用户级配置文件。",
+    "checked_at": "2026-10-25",
+    "status": "app"
+  },
+  {
+    "agent_id": "codemaker",
+    "path": "",
+    "format": "",
+    "docs_url": "",
+    "notes": "已逐项检索，未找到可核实的官方用户级 MCP 配置文档。",
+    "checked_at": "2026-10-25",
+    "status": "app"
+  },
+  {
+    "agent_id": "codestudio",
+    "path": "",
+    "format": "",
+    "docs_url": "",
+    "notes": "产品名存在歧义，未找到足以确认当前 Agent 的 MCP 格式的官方资料。",
+    "checked_at": "2026-10-25",
+    "status": "app"
+  },
+  {
+    "agent_id": "firebender",
+    "path": "",
+    "format": "",
+    "docs_url": "",
+    "notes": "项目 firebender.json 存在线索，但未核实用户级配置，不自动绑定。",
+    "checked_at": "2026-10-25",
+    "status": "app"
+  },
+  {
+    "agent_id": "forge",
+    "path": "",
+    "format": "",
+    "docs_url": "https://forgecode.dev/",
+    "notes": "已检索官方资料，未确认用户级 MCP 配置 schema。",
+    "checked_at": "2026-10-25",
+    "status": "app"
+  },
+  {
+    "agent_id": "mcpjam",
+    "path": "",
+    "format": "",
+    "docs_url": "https://docs.mcpjam.com/inspector/workspaces",
+    "notes": "在 MCPJam 项目的 Servers 页管理；非普通 Agent 用户配置。",
+    "checked_at": "2026-10-25",
+    "status": "app"
+  },
+  {
+    "agent_id": "mux",
+    "path": "",
+    "format": "",
+    "docs_url": "https://github.com/coder/mux",
+    "notes": "已检索，未核实此版本的用户级 MCP 配置路径与 schema。",
+    "checked_at": "2026-10-25",
+    "status": "app"
+  },
+  {
+    "agent_id": "neovate",
+    "path": "",
+    "format": "",
+    "docs_url": "https://github.com/neovateai/neovate-code",
+    "notes": "已检索源码线索，未完成用户级 schema 验证。",
+    "checked_at": "2026-10-25",
+    "status": "app"
+  },
+  {
+    "agent_id": "openhands",
+    "path": "",
+    "format": "",
+    "docs_url": "https://docs.openhands.dev/api-reference/store-settings",
+    "notes": "MCP 由 OpenHands 设置中的 mcp_config 管理；部署和 SDK 配置不同，当前不自动写入。",
+    "checked_at": "2026-10-25",
+    "status": "app"
+  }
+]

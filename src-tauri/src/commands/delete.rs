@@ -138,7 +138,7 @@ pub fn list_trash(root: &str) -> Vec<crate::models::TrashItem> {
             path: p.to_string_lossy().to_string(),
         });
     }
-    out.sort_by(|a, b| b.deleted_ts.cmp(&a.deleted_ts));
+    out.sort_by_key(|item| std::cmp::Reverse(item.deleted_ts));
     out
 }
 
@@ -381,6 +381,7 @@ mod tests {
             skill_meta: std::collections::HashMap::new(),
             token_budget: 8000,
             agent_preferences: HashMap::new(),
+            builtin_sources: Vec::new(),
         }
     }
 

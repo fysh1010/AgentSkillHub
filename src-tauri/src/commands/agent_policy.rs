@@ -149,6 +149,7 @@ mod tests {
                 name: "Codex".into(),
                 skills_dir: "C:/test/skills".into(),
                 resolved_dir: String::new(),
+                path_links: vec![],
                 dir_exists: false,
                 registered: true,
                 known: true,

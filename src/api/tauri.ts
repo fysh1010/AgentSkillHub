@@ -13,6 +13,7 @@ import type {
   DetectedAgent,
   MarketSource,
   MarketSkill,
+  MarketSkillDetail,
   ExternalSkill,
   TrashItem,
   SecurityReport,
@@ -20,6 +21,7 @@ import type {
   AgentTokenStats,
   ManifestImportResult,
   MachineInventory,
+  CustomBuiltinSource,
 } from "../types";
 
 export function getSyncData(): Promise<SyncResult> {
@@ -129,6 +131,10 @@ export function marketList(sourceId: string, query: string, page = 1): Promise<M
   return invoke("market_list_ex", { sourceId, query, page });
 }
 
+export function marketSkillDetail(slug: string): Promise<MarketSkillDetail> {
+  return invoke("market_skill_detail", { slug });
+}
+
 export function marketInstall(
   sourceId: string,
   reference: string,
@@ -155,6 +161,14 @@ export function adoptSkill(agentId: string, dirName: string): Promise<string> {
 }
 
 // ===== 工具内置技能来源（只读）=====
+
+export function saveBuiltinSource(source: CustomBuiltinSource): Promise<AppConfig> {
+  return invoke("save_builtin_source", { source });
+}
+
+export function removeBuiltinSource(id: string): Promise<AppConfig> {
+  return invoke("remove_builtin_source", { id });
+}
 
 export function detectBuiltinSources(): Promise<DetectedAgent[]> {
   return invoke("detect_builtin_sources");

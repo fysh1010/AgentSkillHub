@@ -95,10 +95,10 @@ AppState { config: Mutex<AppConfig> }  文件系统（技能库 / Agent 目录 /
 - `KNOWN_AGENTS`：63 条国内外产品的「全局/用户级」skills 目录模板（`Root` 锚点 + 相对段），
   来源是各产品官方文档 + vercel-labs/skills 跨 Agent 路径表 + 本机实测；项目内目录（`.claude/skills`
   等）不收录，那是随仓库走的；
-- `rel` 支持 `*` 通配段（可多段、逐层展开，单模板上限 128 个路径），用于按市场/插件/版本或账号分目录的产品
-  （如 `~/.meituan-catpaw/*/skills`、`~/.qoder-cn/plugins/cache/*/*/*/skills`），
+- `rel` 支持 `*` 通配段（可多段、逐层展开，单模板上限 128 个路径），用于按账号分目录的产品
+  （如 `~/.meituan-catpaw/*/skills`），不进入插件缓存与安装包，
   展开后 id 追加实例名（`meituan-catpaw-anon`）以免撞注册表主键；
-- `KNOWN_SOURCES`：工具「自带技能」的位置（插件缓存、IDE 内置技能包）。这些**不**作为可部署 Agent 注册，
+- `KNOWN_SOURCES`：明确的系统技能目录（WorkBuddy / Codex 的 `.system`、WPS 灵犀的 `official_skills`）。这些**不**作为可部署 Agent 注册，
   只由 `detect_builtin_sources` / `builtin_source_skills` / `adopt_builtin_skill` 三个命令做只读浏览与收编；
   命令只认 source_id（后端按清单解析路径），前端传不进任意路径；`detect_sources` 还要求目录非空；
 - `detect_existing` 只报本机存在的目录；`template_path` 用于推导路径（通配项返回 None），目录存在不直接等同于程序已安装；
@@ -162,3 +162,9 @@ cargo test --lib clawhub_real_install -- --ignored
   参照 `delete.rs`；
 - 不要在命令里持有配置锁做网络请求；不要新增同步的重 I/O 命令；
 - UI 文案使用简体中文；代码注释密度参照现有文件（中文注释，说明「为什么」）。
+
+## 技能共享、版本通知与目录边界
+
+`skill_sync.rs` 实现独立技能库 Git 同步，`updates.rs` 实现正式 Release 检查与官方链接打开。前端通过 `src/api/maintenance.ts` 调用，复用既有配置写入与 IPC。自定义 Agent 的 MCP 格式选项与 MCP 页面共享，避免重复适配表。
+
+目录核查和使用边界见 [SHARING-AND-AGENTS.md](SHARING-AND-AGENTS.md)。桌面回归运行 `node --experimental-strip-types "scripts/verify-mcp.mjs" --build`；仅验证新增入口可加 `--maintenance-only`。验证使用独立应用标识、临时配置与本地夹具，不执行真实 GitHub 推送。

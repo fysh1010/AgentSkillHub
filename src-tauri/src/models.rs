@@ -104,6 +104,7 @@ pub struct MachineAgent {
     pub name: String,
     pub skills_dir: String,
     pub resolved_dir: String,
+    pub path_links: Vec<DirectoryLink>,
     pub dir_exists: bool,
     pub registered: bool,
     pub known: bool,
@@ -118,6 +119,21 @@ pub struct MachineAgent {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DirectoryLink {
+    pub path: String,
+    pub target: String,
+    pub scope: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CustomBuiltinSource {
+    pub id: String,
+    pub tool_name: String,
+    pub name: String,
+    pub skills_dir: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuiltinSource {
     pub id: String,
     pub name: String,
@@ -125,6 +141,10 @@ pub struct BuiltinSource {
     pub skills_dir: String,
     pub resolved_dir: String,
     pub skill_count: usize,
+    pub skill_dirs: Vec<String>,
+    pub cache_only: bool,
+    #[serde(default)]
+    pub custom: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -211,6 +231,34 @@ pub struct MarketSkill {
     /// 收藏 / star 数
     #[serde(default)]
     pub stars: u64,
+}
+
+/// 腾讯 SkillHub 详情与公开文件预览（只读）。
+#[derive(Debug, Clone, Serialize)]
+pub struct MarketSkillDetail {
+    pub description: String,
+    pub version: String,
+    pub changelog: String,
+    pub owner_name: String,
+    pub publisher_source: String,
+    pub category: String,
+    pub downloads: u64,
+    pub stars: u64,
+    pub installs: u64,
+    pub versions: u64,
+    pub created_ts: u64,
+    pub updated_ts: u64,
+    pub requires_api_key: Option<bool>,
+    pub pricing_type: String,
+    pub files: Vec<MarketSkillFile>,
+    pub skill_md: String,
+    pub preview_error: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MarketSkillFile {
+    pub path: String,
+    pub size_bytes: u64,
 }
 
 /// Agent 目录里的外部（实体）技能
@@ -403,6 +451,8 @@ pub struct ManifestImportResult {
 /// 全局配置（持久化到 app_config_dir/config.json）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
+    #[serde(default)]
+    pub builtin_sources: Vec<CustomBuiltinSource>,
     pub skills_root: String,
     pub agents: Vec<AgentDef>,
     #[serde(default)]
@@ -427,6 +477,7 @@ fn default_token_budget() -> u64 {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
+            builtin_sources: Vec::new(),
             skills_root: String::new(),
             agents: Vec::new(),
             agent_preferences: HashMap::new(),

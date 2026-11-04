@@ -1,14 +1,15 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
-import { store, openAgentSettings, discovery, discoverMachine, loadAll, toast, ensureTranslate, needsTranslation, transMap, isEnabled, ui, secLevels, loadSecuritySummary, tokenStats, refreshTokenStats } from "../store";
-import { listExternalSkills, adoptSkill } from "../api/tauri";
+import { store, openAgentSettings, discovery, discoverMachine, ensureTranslate, needsTranslation, transMap, isEnabled, ui, secLevels, loadSecuritySummary, tokenStats, refreshTokenStats } from "../store";
 import { useEsc } from "../composables/useEsc";
-import type { ExternalSkill, SkillInfo } from "../types";
+import type { SkillInfo } from "../types";
+import BuiltinSkills from "../components/BuiltinSkills.vue";
+import { installedBuiltinSources, sourceProduct } from "../utils/builtinSources";
 
-// Esc 关闭弹窗（外部技能弹窗优先于已配置技能弹窗）
+// Esc 关闭当前弹窗
 useEsc(() => {
-  if (externalFor.value) externalFor.value = null;
-  else if (skillsFor.value) skillsFor.value = null;
+  if (skillsFor.value) skillsFor.value = null;
+  else if (builtinFor.value) builtinFor.value = null;
 });
 
 onMounted(() => {
@@ -18,15 +19,35 @@ onMounted(() => {
 
 const totalSkills = computed(() => store.skills.length);
 const healthy = computed(() => store.skills.filter((s) => s.healthy).length);
-const nativeSkills = computed(() => discovery.inventory?.sources.reduce((n, s) => n + s.skill_count, 0) || 0);
-const confirmedAgents = computed(() => discovery.inventory?.agents.filter((a) => !a.shared && a.installed).length || 0);
-const agents = computed(() => store.agents);
+const builtinSources = computed(() => installedBuiltinSources(discovery.inventory));
+const nativeSkills = computed(() => builtinSources.value.reduce((n, s) => n + s.skill_count, 0));
+const unverifiedCacheSkills = computed(() => builtinSources.value.filter(s => s.cache_only).reduce((n, s) => n + s.skill_count, 0));
+const installedAgentIds = computed(() => new Set(discovery.inventory?.agents.filter(a => a.installed && !a.shared).map(a => a.id) || []));
+const agents = computed(() => store.agents.filter(a => installedAgentIds.value.has(a.agent.id)));
+function directoryLinks(id: string) {
+  return discovery.inventory?.agents.find(agent => agent.id === id)?.path_links.filter(link => link.scope === "directory") || [];
+}
+const builtinProducts = computed(() => {
+  const grouped = new Map<string, { name: string; sources: number; skills: number; system: number; unverified: number; manual: number }>();
+  for (const source of builtinSources.value) {
+    const name = sourceProduct(source.group);
+    const entry = grouped.get(name) || { name, sources: 0, skills: 0, system: 0, unverified: 0, manual: 0 };
+    entry.sources++;
+    entry.skills += source.skill_count;
+    if (source.custom) entry.manual += source.skill_count;
+    else if (source.group.includes("系统技能")) entry.system += source.skill_count;
+    if (source.cache_only) entry.unverified += source.skill_count;
+    grouped.set(name, entry);
+  }
+  return [...grouped.values()].sort((a, b) => a.name.localeCompare(b.name, "zh"));
+});
+const builtinFor = ref<string | null>(null);
 const pendingAgents = computed(() => agents.value.filter((a) => a.drift));
 const readyAgents = computed(() => agents.value.filter((a) => !a.drift && a.dir_ok));
 
 /// 没有分配给任何 Agent 的技能（装了但没启用，提醒用户别浪费）
 const unassigned = computed(() =>
-  store.skills.filter((s) => !store.agents.some((a) => isEnabled(a.agent.id, s.key)))
+  store.skills.filter((s) => !agents.value.some((a) => isEnabled(a.agent.id, s.key)))
 );
 function gotoAgents() {
   ui.page = "agents";
@@ -37,45 +58,10 @@ function formatTokens(n: number): string {
   return `${(n / 1000).toFixed(1)}k`;
 }
 
-// 外部技能弹窗
-const externalFor = ref<{ id: string; name: string } | null>(null);
-const externalList = ref<ExternalSkill[]>([]);
-const externalLoading = ref(false);
-const adopting = ref("");
-
 function statusTone(a: { drift: boolean; dir_ok: boolean }) {
   if (!a.dir_ok) return "amber";
   if (a.drift) return "amber";
   return "green";
-}
-
-async function openExternal(id: string, name: string, count: number) {
-  if (!count) return;
-  externalFor.value = { id, name };
-  externalList.value = [];
-  externalLoading.value = true;
-  try {
-    externalList.value = await listExternalSkills(id);
-  } catch (e) {
-    toast(String(e), "error");
-  } finally {
-    externalLoading.value = false;
-  }
-}
-
-async function doAdopt(dirName: string) {
-  if (!externalFor.value || adopting.value) return;
-  adopting.value = dirName;
-  try {
-    await adoptSkill(externalFor.value.id, dirName);
-    toast(`「${dirName}」已收编到技能库，可在「Agent 配置」中分配给其他工具`, "success");
-    await loadAll();
-    externalList.value = externalList.value.filter((s) => s.dir_name !== dirName);
-  } catch (e) {
-    toast(String(e), "error");
-  } finally {
-    adopting.value = "";
-  }
 }
 
 // ---------- 已配置技能弹窗 ----------
@@ -123,15 +109,15 @@ function openSkills(a: { id: string; name: string }) {
         <div class="stat-num">{{ totalSkills }}<span>个技能</span></div>
         <p class="stat-caption">{{ healthy }} 个技能元信息完整</p>
       </article>
-      <article class="card stat">
-        <div class="stat-heading"><span>内置与插件技能</span><svg viewBox="0 0 24 24"><path d="M9 3H4v7h3a2 2 0 1 1 0 4H4v7h7v-3a2 2 0 1 1 4 0v3h5v-7h-3a2 2 0 1 1 0-4h3V3h-5v3a3 3 0 1 1-6 0V3Z" /></svg></div>
+      <article class="card stat builtin-stat" role="button" tabindex="0" title="查看工具随附技能与插件缓存" @click="builtinFor = 'all'" @keydown.enter="builtinFor = 'all'" @keydown.space.prevent="builtinFor = 'all'">
+        <div class="stat-heading"><span>工具技能目录</span><svg viewBox="0 0 24 24"><path d="M9 3H4v7h3a2 2 0 1 1 0 4H4v7h7v-3a2 2 0 1 1 4 0v3h5v-7h-3a2 2 0 1 1 0-4h3V3h-5v3a3 3 0 1 1-6 0V3Z" /></svg></div>
         <div class="stat-num">{{ nativeSkills }}<span>个条目</span></div>
-        <p class="stat-caption">来自 {{ discovery.inventory?.sources.length || 0 }} 处本机来源</p>
+        <p class="stat-caption">{{ builtinSources.length }} 处目录<span v-if="unverifiedCacheSkills"> · {{ unverifiedCacheSkills }} 个缓存待确认</span> · 查看 ↗</p>
       </article>
       <article class="card stat">
         <div class="stat-heading"><span>已接入 Agent</span><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="13" rx="2"/><path d="M8 22h8M12 18v4M8 10h.01M16 10h.01M8 14h8"/></svg></div>
         <div class="stat-num">{{ agents.length }}<span>个工具</span></div>
-        <p class="stat-caption">{{ confirmedAgents }} 个已确认安装</p>
+        <p class="stat-caption">仅显示本机已安装工具</p>
       </article>
       <article class="card stat">
         <div class="stat-heading"><span>待部署</span><svg viewBox="0 0 24 24"><path d="M12 3v12m-4-4 4 4 4-4M4 15v5h16v-5"/></svg></div>
@@ -169,6 +155,7 @@ function openSkills(a: { id: string; name: string }) {
           <div class="agent-info">
             <b>{{ a.agent.name }}</b>
             <span class="agent-dir" :title="a.agent.skills_dir">{{ a.agent.skills_dir }}</span>
+            <span v-if="directoryLinks(a.agent.id).length" class="agent-link-note" :title="directoryLinks(a.agent.id).map(link => `${link.path} → ${link.target}`).join('\n')">↪ 路径联接 · 查看设置中的实际目录</span>
           </div>
           <span class="badge" :class="statusTone(a)">
             {{ !a.dir_ok ? "待初始化" : a.drift ? "待部署" : "已就绪" }}
@@ -186,16 +173,6 @@ function openSkills(a: { id: string; name: string }) {
           <div class="meta-item" v-if="a.parent_visible">
             <span class="meta-num amber">{{ a.parent_visible }}</span>
             <span class="meta-label">整目录可见</span>
-          </div>
-          <div
-            class="meta-item"
-            :class="{ clickable: a.external_count }"
-            v-if="a.external_count"
-            :title="`点击查看 ${a.external_count} 个外部技能`"
-            @click.stop="openExternal(a.agent.id, a.agent.name, a.external_count)"
-          >
-            <span class="meta-num purple">{{ a.external_count }}</span>
-            <span class="meta-label">外部目录 ⌕</span>
           </div>
         </div>
         <!-- Token 上下文预算条 -->
@@ -217,51 +194,28 @@ function openSkills(a: { id: string; name: string }) {
       </div>
       <div v-if="!agents.length" class="card empty">
         <div class="icon">▣</div>
-        尚未开启任何 Agent 的配置。<br /><button class="btn" style="margin-top:12px" @click="openAgentSettings()">前往设置选择本机工具 →</button>
+        尚未发现可管理的已安装 Agent。<br /><button class="btn" style="margin-top:12px" @click="openAgentSettings()">前往设置查看本机工具 →</button>
       </div>
     </div>
+
+    <div class="section-heading"><div><h2 class="section-title">工具随附技能与缓存 <span>{{ nativeSkills }}</span></h2><p>区分系统技能、插件包和待确认缓存，点击查看清单与目录。</p></div><button class="section-link" @click="builtinFor = 'all'">查看全部 <span>↗</span></button></div>
+    <div class="builtin-product-grid" v-if="builtinProducts.length">
+      <button v-for="product in builtinProducts" :key="product.name" class="card builtin-product" @click="builtinFor = product.name">
+        <span class="builtin-product-mark">{{ product.name.slice(0, 2).toUpperCase() }}</span>
+        <span class="builtin-product-info"><b>{{ product.name }}</b><small>{{ product.sources }} 处来源 · {{ product.skills }} 个目录</small><small>{{ product.system }} 系统 · {{ product.skills - product.system - product.unverified - product.manual }} 插件<span v-if="product.manual"> · {{ product.manual }} 手动</span><span v-if="product.unverified"> · {{ product.unverified }} 待确认</span></small></span>
+        <span class="builtin-product-arrow">↗</span>
+      </button>
+    </div>
+    <div v-else class="card empty">{{ discovery.loading ? '正在扫描工具技能目录…' : '已安装工具暂未发现随附技能。' }}</div>
 
     <p class="foot-note" v-if="readyAgents.length">
       {{ readyAgents.length }} 个 Agent 已就绪 · {{ pendingAgents.length }} 个待部署
     </p>
 
-    <!-- 外部技能弹窗 -->
-    <div v-if="externalFor" class="modal-mask" @click.self="externalFor = null">
-      <div class="modal" style="max-width: 680px">
-        <div class="modal-head">
-          <b>{{ externalFor.name }} 的外部技能（实体目录，工具不会触碰）</b>
-          <button class="btn ghost" @click="externalFor = null">✕</button>
-        </div>
-        <div class="modal-body">
-          <div class="ext-note">
-            这些是该工具自带 / 对话中自动安装的实体技能。点「收编」可把它的副本复制进技能库，
-            之后就能软链接给其他 Agent 使用；原目录不动，不影响该工具自身运行。
-          </div>
-          <div v-if="externalLoading" class="empty" style="padding: 24px">扫描中…</div>
-          <div v-else class="ext-list">
-            <div v-for="s in externalList" :key="s.dir_name" class="ext-item">
-              <div class="ext-info">
-                <div class="ext-line">
-                  <b>{{ s.dir_name }}</b>
-                  <span v-if="s.system" class="badge gray" title="工具自带的系统技能（点开头目录），收编后可共享给其他工具">系统</span>
-                  <span v-if="!s.healthy" class="badge amber" title="SKILL.md 缺失或格式不合法">无标准元信息</span>
-                </div>
-                <div class="ext-desc">{{ s.description || "（无描述）" }}</div>
-                <code class="ext-path" :title="s.path">{{ s.path }}</code>
-              </div>
-              <button class="btn primary ext-btn" :disabled="adopting === s.dir_name" @click="doAdopt(s.dir_name)">
-                {{ adopting === s.dir_name ? "收编中…" : "收编" }}
-              </button>
-            </div>
-            <div v-if="!externalList.length" class="empty" style="padding: 24px">
-              没有外部实体技能，全部是链接，很干净 ✅
-            </div>
-          </div>
-        </div>
-        <div class="modal-foot">
-          <span class="ext-count">{{ externalList.length }} 个技能</span>
-          <button class="btn" @click="externalFor = null">关闭</button>
-        </div>
+    <div v-if="builtinFor" class="modal-mask" @click.self="builtinFor = null">
+      <div class="modal builtin-modal" role="dialog" aria-modal="true" aria-label="工具技能目录">
+        <div class="modal-head"><b>工具技能目录 · 按来源浏览</b><button class="btn ghost" @click="builtinFor = null">✕</button></div>
+        <div class="modal-body builtin-modal-body"><BuiltinSkills :initial-product="builtinFor" dialog /></div>
       </div>
     </div>
 
@@ -322,6 +276,23 @@ function openSkills(a: { id: string; name: string }) {
 .stat-num { font:500 32px/1.3 "Bahnschrift",sans-serif; letter-spacing:-1px; margin:14px 0 6px; font-variant-numeric:tabular-nums; }
 .stat-num > span { font:400 11px "Microsoft YaHei UI",sans-serif; color:var(--faint); letter-spacing:0; margin-left:8px; }
 .stat-caption { color:var(--faint); font-size:11px; }
+.builtin-stat { cursor:pointer; }
+.builtin-stat:hover { border-color:var(--accent); }
+.builtin-stat:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.builtin-product-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(230px,1fr)); gap:12px; }
+.builtin-product { display:flex; align-items:center; gap:12px; width:100%; min-width:0; text-align:left; cursor:pointer; color:var(--text); font:inherit; }
+.builtin-product:hover { border-color:var(--accent); }
+.builtin-product-mark { width:36px; height:36px; flex:none; display:grid; place-items:center; border-radius:8px; background:var(--accent-soft); color:var(--accent); font:600 11px "Bahnschrift",sans-serif; }
+.builtin-product-info { min-width:0; flex:1; display:flex; flex-direction:column; }
+.builtin-product-info b { font-size:13px; }
+.builtin-product-info small { color:var(--muted); font-size:11px; }
+.builtin-product-arrow { color:var(--faint); }
+.builtin-modal { width:min(1120px,calc(100vw - 48px)); max-width:none; height:min(790px,calc(100vh - 48px)); max-height:calc(100vh - 48px); display:flex; flex-direction:column; }
+.builtin-modal-body { flex:1; display:flex; overflow:hidden; min-height:0; }
+.builtin-modal-body :deep(.builtin-root) { width:100%; height:100%; min-height:0; display:flex; flex-direction:column; }
+.builtin-modal-body :deep(.builtin-browser) { flex:1; min-height:0; }
+.builtin-modal-body :deep(.source-list),.builtin-modal-body :deep(.source-detail) { max-height:none; min-height:0; overflow:auto; }
+.builtin-modal-body :deep(.builtin-skills) { max-height:none; overflow:visible; }
 .section-heading { display:flex; justify-content:space-between; align-items:center; gap:20px; margin:30px 0 18px; }
 .section-title { font-size:16px; font-weight:600; }
 .section-title > span { display:inline-block; margin-left:7px; padding:1px 6px; border:1px solid var(--border); border-radius:5px; font:11px/17px "Consolas",monospace; color:var(--muted); vertical-align:middle; }
@@ -343,12 +314,10 @@ function openSkills(a: { id: string; name: string }) {
 .agent-info { flex:1; min-width:0; display:flex; flex-direction:column; }
 .agent-info b { font-size:13px; font-weight:600; }
 .agent-dir { color:var(--faint); font-size:10px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; margin-top:3px; font-family:"Cascadia Code","Consolas",monospace; }
+.agent-link-note { color:var(--accent); font-size:10px; margin-top:4px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .agent-row .badge { font-size:10px; white-space:nowrap; padding:2px 6px; }
 .agent-meta { display:flex; gap:28px; padding:19px 0 3px; margin-top:14px; border-top:1px solid var(--border-soft); }
 .meta-item { display:flex; flex-direction:column; align-items:flex-start; gap:3px; }
-.meta-item.clickable { cursor:pointer; border-radius:5px; padding:0 6px; margin:0 -6px; }
-.meta-item.clickable:hover { background:var(--accent-soft); }
-.meta-num.purple { color:var(--text); }
 @media (max-width:1100px) {
   .stats { gap:12px; }
   .stat { padding:16px; }
@@ -356,7 +325,7 @@ function openSkills(a: { id: string; name: string }) {
   .unassigned-preview { display:none; }
 }
 
-/* 外部技能弹窗 */
+/* 已配置技能弹窗 */
 .ext-note {
   font-size: 12.5px;
   color: var(--muted);
@@ -412,11 +381,6 @@ function openSkills(a: { id: string; name: string }) {
   text-overflow: ellipsis;
   white-space: nowrap;
   margin-top: 2px;
-}
-.ext-btn {
-  padding: 5px 14px;
-  font-size: 12.5px;
-  flex-shrink: 0;
 }
 .ext-count {
   color: var(--faint);

@@ -247,7 +247,7 @@ pub const KNOWN_AGENTS: &[KnownAgent] = &[
         id: "cline",
         name: "Cline",
         root: Root::Home,
-        rel: &[".agents", "skills"],
+        rel: &[".cline", "skills"],
     },
     KnownAgent {
         id: "antigravity-cli",
@@ -548,7 +548,7 @@ pub const KNOWN_AGENTS: &[KnownAgent] = &[
         id: "qoder-cli",
         name: "Qoder CLI",
         root: Root::Home,
-        rel: &[".qoder-cli", "skills"],
+        rel: &[".qoder", "skills"],
     },
     KnownAgent {
         id: "lingxi",
@@ -635,127 +635,9 @@ pub const KNOWN_AGENTS: &[KnownAgent] = &[
 /// 工具「自带技能」的位置：插件市场缓存、IDE 内置技能包等。
 /// 这些目录由对应工具自己写入与升级，本工具只读浏览 + 收编副本，绝不往里做链接部署。
 pub const KNOWN_SOURCES: &[KnownAgent] = &[
-    KnownAgent {
-        id: "workbuddy-system",
-        name: "WorkBuddy 系统技能",
-        root: Root::Home,
-        rel: &[".workbuddy", "skills", ".system"],
-    },
-    KnownAgent {
-        id: "workbuddy-plugins",
-        name: "WorkBuddy 插件缓存",
-        root: Root::Home,
-        rel: &[".workbuddy", "plugins", "cache", "*", "*", "*", "skills"],
-    },
-    KnownAgent {
-        id: "codex-system",
-        name: "Codex 系统技能",
-        root: Root::Home,
-        rel: &[".codex", "skills", ".system"],
-    },
-    KnownAgent {
-        id: "codex-plugins",
-        name: "Codex 插件缓存",
-        root: Root::Home,
-        rel: &[".codex", "plugins", "cache", "*", "*", "*", "skills"],
-    },
-    KnownAgent {
-        id: "claude-cache",
-        name: "Claude Code 插件缓存",
-        root: Root::Home,
-        rel: &[".claude", "plugins", "cache", "*", "*", "*", "skills"],
-    },
-    KnownAgent {
-        id: "doubao-builtin-local",
-        name: "豆包内置技能",
-        root: Root::LocalAppData,
-        rel: &[
-            "Doubao",
-            "User Data",
-            "*",
-            ".doubao",
-            "agent_mode",
-            "workspace",
-            ".skills",
-        ],
-    },
-    KnownAgent {
-        id: "doubao-builtin-roaming",
-        name: "豆包内置技能",
-        root: Root::AppData,
-        rel: &[
-            "Doubao",
-            "*",
-            ".doubao",
-            "agent_mode",
-            "workspace",
-            ".skills",
-        ],
-    },
-    KnownAgent {
-        id: "lingxi-builtin",
-        name: "WPS 灵犀内置技能",
-        root: Root::AppData,
-        rel: &["WPS 灵犀", "serverdir", "official_skills"],
-    },
-    KnownAgent {
-        id: "claude-plugins",
-        name: "Claude Code 插件技能",
-        root: Root::Home,
-        rel: &[
-            ".claude",
-            "plugins",
-            "marketplaces",
-            "*",
-            "plugins",
-            "*",
-            "skills",
-        ],
-    },
-    KnownAgent {
-        id: "claude-external-plugins",
-        name: "Claude Code 插件技能 (external)",
-        root: Root::Home,
-        rel: &[
-            ".claude",
-            "plugins",
-            "marketplaces",
-            "*",
-            "external_plugins",
-            "*",
-            "skills",
-        ],
-    },
-    KnownAgent {
-        id: "qoder-plugins",
-        name: "Qoder 插件技能",
-        root: Root::Home,
-        rel: &[".qoder", "plugins", "cache", "*", "*", "*", "skills"],
-    },
-    KnownAgent {
-        id: "qoder-cn-plugins",
-        name: "Qoder CN 插件技能",
-        root: Root::Home,
-        rel: &[".qoder-cn", "plugins", "cache", "*", "*", "*", "skills"],
-    },
-    KnownAgent {
-        id: "qoder-cn-builtin",
-        name: "Qoder CN 内置技能",
-        root: Root::Home,
-        rel: &[".qoder-cn", "security-resources", "*", "skills"],
-    },
-    KnownAgent {
-        id: "trae-cn-builtin",
-        name: "Trae CN 内置技能",
-        root: Root::Home,
-        rel: &[".trae-cn", "builtin", "*", "skills"],
-    },
-    KnownAgent {
-        id: "trae-cn-builtin-scene",
-        name: "Trae CN 内置技能 (按场景)",
-        root: Root::Home,
-        rel: &[".trae-cn", "builtin", "*", "*", "skills"],
-    },
+    KnownAgent { id: "workbuddy-system", name: "WorkBuddy 系统技能", root: Root::Home, rel: &[".workbuddy", "skills", ".system"] },
+    KnownAgent { id: "codex-system", name: "Codex 系统技能", root: Root::Home, rel: &[".codex", "skills", ".system"] },
+    KnownAgent { id: "lingxi-builtin", name: "WPS 灵犀系统技能", root: Root::AppData, rel: &["WPS 灵犀", "serverdir", "official_skills"] },
 ];
 
 #[cfg(test)]
@@ -805,54 +687,19 @@ mod tests {
         check(KNOWN_AGENTS);
         check(KNOWN_SOURCES);
         assert!(KNOWN_AGENTS.len() > 40);
-        assert!(KNOWN_SOURCES.len() >= 5);
+        assert_eq!(KNOWN_SOURCES.len(), 3);
     }
 
     #[test]
-    fn multi_wildcard_source_expansion() {
-        let root = test_scratch("catalog_src");
-        // ~/.qoder-cn/plugins/cache/<市场>/<插件>/<版本>/skills
-        for (mkt, plugin, ver) in [
-            ("qoder-marketplace", "design-review", "0.2.0"),
-            ("qoder-marketplace", "design-review", "0.1.0"),
-            ("app-bundler", "qoder-context", "1.0.61"),
-        ] {
-            mk(
-                &root,
-                &format!(".qoder-cn/plugins/cache/{mkt}/{plugin}/{ver}/skills/a-skill"),
-            );
-        }
-        mk(&root, ".qoder-cn/plugins/cache/only-mkt"); // 层级不够，不应命中
-
+    fn plugin_caches_are_not_automatic_skill_sources() {
+        let root = test_scratch("catalog_no_plugin_sources");
+        mk(&root, ".qoder-cn/plugins/cache/market/plugin/1.0.0/skills/example");
+        mk(&root, ".workbuddy/plugins/cache/market/plugin/1.0.0/skills/example");
+        mk(&root, ".workbuddy/skills/.system/example");
         let hits = detect_sources(&bases(&root));
-        let got: Vec<(String, String)> = hits
-            .iter()
-            .filter(|h| h.agent.id == "qoder-cn-plugins")
-            .map(|h| (h.agent_id(), h.display_name()))
-            .collect();
-        assert_eq!(got.len(), 3, "三个插件版本都应展开: {got:?}");
-        assert!(
-            got.iter()
-                .all(|(id, _)| !id.contains('/') && !id.is_empty()),
-            "id 需为扁平安全串: {got:?}"
-        );
-        // 名称里带上市场/插件/版本，用户才看得出收编的是哪一份
-        assert!(got
-            .iter()
-            .any(|(_, n)| n.ends_with("qoder-marketplace/design-review/0.1.0")));
-        let first = &got[0].0;
-        assert_eq!(
-            source_dir(&bases(&root), first).map(|p| p.to_string_lossy().to_string()),
-            Some(
-                hits.iter()
-                    .find(|h| &h.agent_id() == first)
-                    .unwrap()
-                    .path
-                    .to_string_lossy()
-                    .to_string()
-            )
-        );
-        assert!(source_dir(&bases(&root), "no-such-source").is_none());
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].agent.id, "workbuddy-system");
+        assert!(source_dir(&bases(&root), "qoder-cn-plugins").is_none());
     }
 
     #[test]

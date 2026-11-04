@@ -86,7 +86,7 @@ pub fn agent_token_stats(agent: &AgentDef, cfg: &AppConfig) -> AgentTokenStats {
             body_tokens: body,
         });
     }
-    skills.sort_by(|a, b| b.resident_tokens.cmp(&a.resident_tokens));
+    skills.sort_by_key(|item| std::cmp::Reverse(item.resident_tokens));
     let resident_tokens = skills.iter().map(|s| s.resident_tokens).sum();
     let body_tokens = skills.iter().map(|s| s.body_tokens).sum();
     let over_budget = cfg.token_budget > 0 && resident_tokens > cfg.token_budget;
@@ -127,9 +127,11 @@ mod tests {
 
     #[test]
     fn over_budget_flag() {
-        let mut cfg = AppConfig::default();
-        cfg.skills_root = std::env::temp_dir().to_string_lossy().to_string();
-        cfg.token_budget = 8000;
+        let cfg = AppConfig {
+            skills_root: std::env::temp_dir().to_string_lossy().to_string(),
+            token_budget: 8000,
+            ..AppConfig::default()
+        };
         let agent = AgentDef {
             id: "t".into(),
             name: "T".into(),

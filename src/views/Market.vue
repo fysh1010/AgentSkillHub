@@ -4,6 +4,7 @@ import { store, loadAll, toast, toggleSkill, ensureTranslate, needsTranslation, 
 import {
   marketSources,
   marketList,
+  marketSkillDetail,
   marketInstall,
   marketAddSource,
   marketRemoveSource,
@@ -11,14 +12,16 @@ import {
   deployAgent,
   formatTs,
   scanSkillSecurity,
+  formatBytes,
 } from "../api/tauri";
-import type { MarketSource, MarketSkill, SecurityReport } from "../types";
+import type { MarketSource, MarketSkill, MarketSkillDetail, SecurityReport } from "../types";
 import { useEsc } from "../composables/useEsc";
-import SkillGlyph from "../components/SkillGlyph.vue";
+import SkillIcon from "../components/SkillIcon.vue";
 
 // Esc 关闭「安装后启用」弹窗（部署进行中不响应，避免误关）
 useEsc(() => {
   if (showEnable.value && !enabling.value) showEnable.value = false;
+  else if (selected.value) closeDetail();
 });
 
 const sources = ref<MarketSource[]>([]);
@@ -31,6 +34,56 @@ const error = ref("");
 const installing = ref("");
 const showAddSource = ref(false);
 const newSource = ref({ name: "", repo: "", subpath: "" });
+const selected = ref<MarketSkill | null>(null);
+const detail = ref<MarketSkillDetail | null>(null);
+const detailLoading = ref(false);
+const detailError = ref("");
+const detailTab = ref<"content" | "files">("content");
+const detailCache = new Map<string, MarketSkillDetail>();
+let detailRequest = 0;
+
+function closeDetail() {
+  detailRequest++;
+  selected.value = null;
+  detailLoading.value = false;
+}
+
+async function openDetail(skill: MarketSkill) {
+  selected.value = skill;
+  detail.value = null;
+  detailError.value = "";
+  detailLoading.value = false;
+  detailTab.value = "content";
+  const request = ++detailRequest;
+  if (skill.source_kind !== "skillhub") return;
+  const key = `${skill.reference}@${skill.version}`;
+  const cached = detailCache.get(key);
+  if (cached && !cached.preview_error) { detail.value = cached; return; }
+  detailLoading.value = true;
+  try {
+    const result = await marketSkillDetail(skill.reference);
+    detailCache.set(key, result);
+    if (request === detailRequest) detail.value = result;
+  } catch (e) {
+    if (request === detailRequest) detailError.value = String(e);
+  } finally {
+    if (request === detailRequest) detailLoading.value = false;
+  }
+}
+
+function installFromDetail() {
+  if (!selected.value) return;
+  const skill = selected.value;
+  closeDetail();
+  void install(skill);
+}
+
+function updateFromDetail() {
+  if (!selected.value) return;
+  const skill = selected.value;
+  closeDetail();
+  void doUpdate(skill);
+}
 
 const activeKind = computed(
   () => sources.value.find((s) => s.id === activeSource.value)?.kind || ""
@@ -350,18 +403,9 @@ function fmtDate(ts: number): string {
 
 // ---------- 图标 / 美化工具 ----------
 
-// 官方图标优先级：技能官方图标 → 作者头像 → 统一线性图标。
+// 官方图标优先级：技能官方图标 → 作者头像 → 自动分类图标。
 function officialImg(s: MarketSkill): string {
   return s.icon_url || s.owner_image || "";
-}
-
-/// 图片加载失败时逐级降级：官方图标 → 作者头像 → 线性图标
-function onImgError(s: MarketSkill) {
-  if (s.icon_url) {
-    s.icon_url = "";
-  } else {
-    s.owner_image = "";
-  }
 }
 
 /// 热门标记：ClawHub 用官方 featured，其余按下载量判定
@@ -539,23 +583,14 @@ onMounted(loadSources);
         :key="s.reference + s.name"
         class="card mk"
         :class="{ featured: s.featured }"
+        tabindex="0"
+        :aria-label="`查看 ${s.display_name} 的技能详情`"
+        @click="openDetail(s)"
+        @keydown.enter.self="openDetail(s)"
+        @keydown.space.self.prevent="openDetail(s)"
       >
         <div class="mk-head">
-          <div
-            class="mk-icon"
-            :class="{ 'has-img': officialImg(s) }"
-          >
-            <img
-              v-if="officialImg(s)"
-              class="mk-icon-img"
-              :src="officialImg(s)"
-              alt=""
-              loading="lazy"
-              referrerpolicy="no-referrer"
-              @error="onImgError(s)"
-            />
-            <SkillGlyph v-else :label="s.name + ' ' + s.display_name" />
-          </div>
+          <SkillIcon class="mk-icon" :name="s.name + ' ' + s.display_name" :identity="s.name" :description="s.description" :src="officialImg(s)" :fallback-src="s.icon_url ? s.owner_image : ''" />
           <div class="mk-title">
             <div class="mk-name-row">
               <b class="mk-name" :title="s.name">{{ s.display_name }}</b>
@@ -613,7 +648,7 @@ onMounted(loadSources);
                 v-if="hasUpdate(s)"
                 class="btn primary mk-install"
                 :disabled="updating === s.name"
-                @click="doUpdate(s)"
+                @click.stop="doUpdate(s)"
               >
                 {{ updating === s.name ? "更新中…" : `更新到 ${s.version}` }}
               </button>
@@ -623,12 +658,13 @@ onMounted(loadSources);
               v-else
               class="btn primary mk-install"
               :disabled="installing === s.name"
-              @click="install(s)"
+              @click.stop="install(s)"
             >
               {{ installing === s.name ? "安装中…" : "安装" }}
             </button>
           </span>
         </div>
+        <button class="mk-detail-link" @click.stop="openDetail(s)">查看详情 <span aria-hidden="true">↗</span></button>
       </div>
       </div>
     </template>
@@ -661,6 +697,68 @@ onMounted(loadSources);
       </template>
       <template v-else-if="activeKind === 'github'">该仓库下没有技能目录。</template>
       <template v-else>没有找到技能，换个关键词试试。</template>
+    </div>
+
+    <!-- 市场详情：列表信息即刻可见，腾讯源再加载官方详情和公开 SKILL.md。 -->
+    <div v-if="selected" class="modal-mask" @click.self="closeDetail">
+      <section class="modal market-detail" role="dialog" aria-modal="true" :aria-label="`${selected.display_name} 技能详情`">
+        <div class="modal-head market-detail-head">
+          <SkillIcon :name="selected.name + ' ' + selected.display_name" :identity="selected.name" :description="selected.description" :src="officialImg(selected)" :fallback-src="selected.icon_url ? selected.owner_image : ''" />
+          <div class="market-detail-title">
+            <span class="market-detail-source">{{ sourceLabel(selected) }} <span v-if="detail?.publisher_source">· {{ detail.publisher_source === 'official' ? '官方发布' : '社区发布' }}</span></span>
+            <h2>{{ selected.display_name }}</h2>
+            <code>{{ selected.name }}</code>
+          </div>
+          <button class="btn ghost" aria-label="关闭详情" @click="closeDetail">✕</button>
+        </div>
+        <div class="modal-body market-detail-body">
+          <div class="market-detail-stats">
+            <div><b>{{ fmtDownloads(detail?.downloads ?? selected.downloads) }}</b><span>下载量</span></div>
+            <div><b>{{ fmtDownloads(detail?.stars ?? selected.stars) }}</b><span>收藏</span></div>
+            <div><b>{{ detail?.version || selected.version || '未标注' }}</b><span>最新版本</span></div>
+          </div>
+          <div class="market-detail-facts">
+            <span>作者 <b>{{ detail?.owner_name || selected.owner || '未标注' }}</b></span>
+            <span>分类 <b>{{ catLabel(detail?.category || selected.category) }}</b></span>
+            <span v-if="detail?.updated_ts || selected.updated_ts">更新 <b>{{ fmtDate(detail?.updated_ts || selected.updated_ts) }}</b></span>
+            <span v-if="detail?.created_ts">发布 <b>{{ fmtDate(detail.created_ts) }}</b></span>
+            <span v-if="detail?.versions">版本数 <b>{{ detail.versions }}</b></span>
+            <span v-if="detail && detail.installs">安装量 <b>{{ fmtDownloads(detail.installs) }}</b></span>
+            <span v-if="detail?.requires_api_key === true">需要 API Key</span>
+            <span v-if="detail?.pricing_type === 'paid'">付费技能</span>
+          </div>
+          <div v-if="selected.topics.length" class="mk-topics market-detail-topics"><span v-for="t in selected.topics" :key="t" class="topic">{{ t }}</span></div>
+          <section class="market-detail-summary">
+            <h3>技能介绍</h3>
+            <p>{{ showDesc(detail?.description || selected.description) }}</p>
+          </section>
+          <p v-if="detail?.changelog" class="market-detail-change"><b>更新说明</b> {{ detail.changelog }}</p>
+          <p v-if="detailLoading" class="market-detail-notice">正在读取官方详情和技能内容…</p>
+          <p v-if="detailError" class="market-detail-notice error">官方详情暂时无法加载：{{ detailError }} <button @click="openDetail(selected)">重试</button></p>
+          <template v-if="selected.source_kind === 'skillhub' && detail">
+            <div class="market-detail-tabs" role="tablist" aria-label="技能内容">
+              <button role="tab" :aria-selected="detailTab === 'content'" :class="{ active: detailTab === 'content' }" @click="detailTab = 'content'">SKILL.md</button>
+              <button role="tab" :aria-selected="detailTab === 'files'" :class="{ active: detailTab === 'files' }" @click="detailTab = 'files'">文件清单 · {{ detail.files.length }}</button>
+            </div>
+            <div v-if="detailTab === 'content'" class="market-detail-content">
+              <p v-if="detail.preview_error" class="market-detail-notice">{{ detail.preview_error }}</p>
+              <pre v-else-if="detail.skill_md" class="market-skill-source">{{ detail.skill_md }}</pre>
+              <p v-else class="market-detail-notice">该技能暂未公开正文预览。</p>
+            </div>
+            <div v-else class="market-detail-files">
+              <div v-for="file in detail.files" :key="file.path"><code>{{ file.path }}</code><span>{{ formatBytes(file.size_bytes) }}</span></div>
+              <p v-if="!detail.files.length" class="market-detail-notice">暂无公开文件清单。</p>
+            </div>
+          </template>
+          <p v-else-if="selected.source_kind !== 'skillhub'" class="market-detail-notice">该市场源暂未提供在线文件预览。安装后可在技能库查看完整 SKILL.md。</p>
+        </div>
+        <div class="modal-foot">
+          <span v-if="selected.installed && !hasUpdate(selected)" class="badge green">✓ 已安装</span>
+          <button v-if="selected.installed && hasUpdate(selected)" class="btn primary" :disabled="!!updating" @click="updateFromDetail">更新到 {{ selected.version }}</button>
+          <button v-if="!selected.installed" class="btn primary" :disabled="!!installing" @click="installFromDetail">{{ installing === selected.name ? '安装中…' : '安装技能' }}</button>
+          <button class="btn" @click="closeDetail">关闭</button>
+        </div>
+      </section>
     </div>
 
     <!-- 安装后启用到 Agent -->
@@ -852,12 +950,16 @@ onMounted(loadSources);
   display: flex;
   flex-direction: column;
   gap: 10px;
+  cursor: pointer;
   transition: all 0.15s;
 }
 .mk:hover {
   box-shadow: var(--shadow);
   border-color: var(--accent);
 }
+.mk:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.mk-detail-link { align-self: flex-end; padding: 0; border: 0; background: none; color: var(--accent); font: inherit; font-size: 11px; cursor: pointer; }
+.mk-detail-link:hover { text-decoration: underline; }
 .mk.featured {
   border-color: var(--border);
 }
@@ -870,31 +972,7 @@ onMounted(loadSources);
 .mk-icon {
   width: 44px;
   height: 44px;
-  border-radius: 9px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 22px;
-  color: var(--muted);
-  background: var(--bg-soft);
-  border: 1px solid var(--border);
-  flex-shrink: 0;
-  box-shadow: none;
 }
-/* 展示官方原图时：白底、去投影，避免自绘风格干扰官方视觉 */
-.mk-icon.has-img {
-  background: #fff;
-  border: 1px solid var(--border-soft);
-  box-shadow: none;
-  overflow: hidden;
-}
-.mk-icon-img {
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-  display: block;
-}
-.mk-icon :deep(svg) { width:21px; height:21px; }
 .mk-title {
   min-width: 0;
   flex: 1;
@@ -1043,4 +1121,39 @@ onMounted(loadSources);
   color: var(--red);
   border: 1px solid rgba(239, 68, 68, 0.28);
 }
+
+.market-detail { max-width: 800px; max-height: min(88vh, 800px); border-radius: 12px; }
+.market-detail-head { gap: 14px; align-items: center; }
+.market-detail-head .skill-icon { width: 48px; height: 48px; }
+.market-detail-title { flex: 1; min-width: 0; }
+.market-detail-title h2 { font-size: 18px; line-height: 1.35; overflow-wrap: anywhere; }
+.market-detail-title code { display: block; color: var(--faint); font-size: 11px; margin-top: 2px; overflow-wrap: anywhere; }
+.market-detail-source { display: block; color: var(--accent); font-size: 11px; font-weight: 600; margin-bottom: 2px; }
+.market-detail-body { padding: 20px 24px 24px; }
+.market-detail-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.market-detail-stats > div { display: flex; flex-direction: column; padding: 12px 14px; border: 1px solid var(--border-soft); border-radius: 8px; background: var(--bg-soft); }
+.market-detail-stats b { font: 600 16px/1.4 "Bahnschrift", "Microsoft YaHei UI", sans-serif; overflow-wrap: anywhere; }
+.market-detail-stats span { color: var(--faint); font-size: 11px; margin-top: 3px; }
+.market-detail-facts { display: flex; flex-wrap: wrap; gap: 8px 22px; padding: 16px 0; color: var(--muted); font-size: 11.5px; border-bottom: 1px solid var(--border-soft); }
+.market-detail-facts b { color: var(--text); font-weight: 550; margin-left: 4px; }
+.market-detail-topics { margin-top: 14px; }
+.market-detail-summary { margin: 18px 0; }
+.market-detail-summary h3 { font-size: 12px; color: var(--faint); margin-bottom: 7px; }
+.market-detail-summary p { font-size: 13px; line-height: 1.75; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+.market-detail-change { padding: 10px 12px; border-radius: 7px; background: var(--bg-soft); font-size: 12px; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+.market-detail-change b { color: var(--text); margin-right: 6px; }
+.market-detail-notice { color: var(--muted); font-size: 12px; padding: 15px 0; }
+.market-detail-notice.error { color: var(--red); }
+.market-detail-notice button { margin-left: 8px; padding: 0; border: 0; background: none; color: var(--accent); cursor: pointer; font: inherit; text-decoration: underline; }
+.market-detail-tabs { display: flex; gap: 20px; margin-top: 22px; border-bottom: 1px solid var(--border); }
+.market-detail-tabs button { padding: 0 2px 10px; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--muted); font-size: 12px; cursor: pointer; }
+.market-detail-tabs button.active { border-bottom-color: var(--accent); color: var(--text); font-weight: 600; }
+.market-detail-content, .market-detail-files { padding-top: 14px; }
+.market-skill-source { padding: 18px; background: var(--bg-soft); border: 1px solid var(--border-soft); border-radius: 8px; color: var(--text); font: 12px/1.75 "Cascadia Code", "Consolas", "Microsoft YaHei UI", monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.market-detail-files > div { display: flex; gap: 12px; justify-content: space-between; padding: 9px 3px; border-bottom: 1px solid var(--border-soft); font-size: 11px; }
+.market-detail-files code { min-width: 0; overflow-wrap: anywhere; }
+.market-detail-files span { color: var(--faint); white-space: nowrap; }
+.market-detail .modal-foot { align-items: center; }
+.market-detail .modal-foot .badge { margin-right: auto; }
+@media (max-width: 760px) { .market-detail-body { padding: 16px; } .market-detail-facts { gap: 8px 14px; } }
 </style>

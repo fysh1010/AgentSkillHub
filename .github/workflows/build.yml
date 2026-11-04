@@ -36,6 +36,10 @@ jobs:
         run: |
           & ./node_modules/.bin/vue-tsc.cmd --noEmit
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --experimental-strip-types ./scripts/test-mcp-command.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test --manifest-path src-tauri/Cargo.toml --lib --locked
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build portable executable

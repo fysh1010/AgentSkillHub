@@ -158,21 +158,17 @@ mod tests {
     }
 
     fn sample_cfg(root: &str) -> AppConfig {
-        let mut cfg = AppConfig::default();
-        cfg.skills_root = root.into();
+        let mut cfg = AppConfig { skills_root: root.into(), token_budget: 8000, ..AppConfig::default() };
         cfg.agents.push(AgentDef {
             id: "claude".into(),
             name: "Claude Code".into(),
             skills_dir: r"C:\x\skills".into(),
             builtin: true,
         });
-        let mut ac = AgentConfig::default();
-        ac.enabled_skills = vec!["a".into(), "b".into()];
+        let ac = AgentConfig { enabled_skills: vec!["a".into(), "b".into()] };
         cfg.agent_configs.insert("claude".into(), ac);
-        let mut meta = SkillUserMeta::default();
-        meta.starred = true;
+        let meta = SkillUserMeta { starred: true, ..SkillUserMeta::default() };
         cfg.skill_meta.insert("a".into(), meta);
-        cfg.token_budget = 8000;
         cfg
     }
 

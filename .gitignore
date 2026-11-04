@@ -25,3 +25,6 @@ Thumbs.db
 .workbuddy/
 release/
 .claude/settings.local.json
+.mimosa/
+**/.mimosa/
+.claude/*.lock

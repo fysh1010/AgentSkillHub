@@ -4,8 +4,10 @@ import { store, loadAll, toast, ui } from "../store";
 import { setSkillsRoot, gitBackup, setTokenBudget, exportManifest, importManifest, latestManifest } from "../api/tauri";
 import AgentManager from "../components/AgentManager.vue";
 import BuiltinSkills from "../components/BuiltinSkills.vue";
+import SkillSync from "../components/SkillSync.vue";
+import UpdateSettings from "../components/UpdateSettings.vue";
 import pkg from "../../package.json";
-const tabs = [{id:"agents",name:"Agent 工具"},{id:"builtin",name:"内置技能"},{id:"general",name:"通用设置"},{id:"data",name:"数据与备份"}];
+const tabs = [{id:"agents",name:"Agent 工具"},{id:"builtin",name:"工具技能"},{id:"general",name:"通用设置"},{id:"data",name:"数据与备份"}];
 const root = ref(store.config?.skills_root || "");
 watch(() => store.config?.skills_root, (value, previous) => {
   if (!root.value || root.value === previous) root.value = value || "";
@@ -165,8 +167,10 @@ onMounted(loadLatestManifest);
       </div>
     </section>
 
+<UpdateSettings />
 <section class="card block"><h3>关于 AgentSkillHub</h3><p class="block-desc">v{{ pkg.version }} · 本地技能管理。路径跟随当前用户，统一使用黑白或蓝白配色。</p></section>
     </div><div v-else class="settings-section">
+    <SkillSync />
     <!-- Git 备份 -->
     <section class="card block">
       <div class="block-head">

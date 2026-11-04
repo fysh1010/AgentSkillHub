@@ -332,7 +332,7 @@ fn scan_dir(skill_key: &str, dir: &Path) -> SecurityReport {
         }
     }
     // 高级别优先，便于前端展示前几条
-    findings.sort_by(|a, b| level_rank(&a.level).cmp(&level_rank(&b.level)));
+    findings.sort_by_key(|item| level_rank(&item.level));
     SecurityReport {
         skill_key: skill_key.to_string(),
         level: rollup_level(&findings),

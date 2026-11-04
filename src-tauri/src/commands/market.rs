@@ -347,7 +347,7 @@ pub fn clawhub_browse(skills_root: &str, page: u32) -> Result<Vec<MarketSkill>, 
         }
     }
     // 合并后整体按下载量降序，前端再按分类分组
-    merged.sort_by(|a, b| b.downloads.cmp(&a.downloads));
+    merged.sort_by_key(|item| std::cmp::Reverse(item.downloads));
     Ok(merged)
 }
 
@@ -584,6 +584,114 @@ pub fn skillhub_search(query: &str, skills_root: &str, page: u32) -> Result<Vec<
         }
     }
     Ok(out)
+}
+
+/// 按公开 slug 读取官方详情、文件清单与 SKILL.md；文件预览失败时仍返回详情。
+pub fn skillhub_detail(slug: &str) -> Result<crate::models::MarketSkillDetail, String> {
+    use crate::models::{MarketSkillDetail, MarketSkillFile};
+
+    let slug = slug.trim();
+    if slug.is_empty() || slug.len() > 200 || slug.contains("..") || slug.contains('/') || slug.contains('\\') {
+        return Err("无效的技能标识".into());
+    }
+    let base = format!("{SKILLHUB_API}/api/v1/skills/{}", urlencoding_lite(slug));
+    let body = http_get_text(&base)?;
+    let response: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|e| format!("解析 SkillHub 详情失败: {e}"))?;
+    let skill = response.get("skill").ok_or_else(|| {
+        response
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("SkillHub 未返回技能详情")
+            .to_string()
+    })?;
+    let latest = response.get("latestVersion");
+    let owner = response.get("owner");
+    let string = |value: Option<&serde_json::Value>| {
+        value.and_then(|v| v.as_str()).unwrap_or("").to_string()
+    };
+    let number = |value: Option<&serde_json::Value>| {
+        value.and_then(|v| v.as_u64()).unwrap_or(0)
+    };
+    let labels = skill.get("labels");
+    let mut detail = MarketSkillDetail {
+        description: string(
+            skill
+                .get("summary_zh")
+                .filter(|v| v.as_str().is_some_and(|s| !s.is_empty()))
+                .or_else(|| skill.get("summary")),
+        ),
+        version: string(latest.and_then(|v| v.get("version"))),
+        changelog: string(latest.and_then(|v| v.get("changelog"))),
+        owner_name: string(owner.and_then(|v| v.get("displayName"))),
+        publisher_source: string(skill.get("source")),
+        category: string(skill.get("category")),
+        downloads: number(skill.pointer("/stats/downloads")),
+        stars: number(skill.pointer("/stats/stars")),
+        installs: number(skill.pointer("/stats/installs")),
+        versions: number(skill.pointer("/stats/versions")),
+        created_ts: number(skill.get("createdAt")) / 1000,
+        updated_ts: number(skill.get("updatedAt")) / 1000,
+        requires_api_key: labels
+            .and_then(|v| v.get("requires_api_key"))
+            .and_then(|v| v.as_str())
+            .map(|v| v == "true"),
+        pricing_type: string(labels.and_then(|v| v.get("pricing_type"))),
+        files: Vec::new(),
+        skill_md: String::new(),
+        preview_error: String::new(),
+    };
+    let version_query = if detail.version.is_empty() {
+        String::new()
+    } else {
+        format!("version={}", urlencoding_lite(&detail.version))
+    };
+    let files_url = if version_query.is_empty() {
+        format!("{base}/files")
+    } else {
+        format!("{base}/files?{version_query}")
+    };
+    match http_get_text(&files_url) {
+        Ok(body) => {
+            match serde_json::from_str::<serde_json::Value>(&body) {
+                Ok(response) => {
+                    if let Some(error) = response.get("error").and_then(|v| v.as_str()) {
+                        detail.preview_error = error.to_string();
+                        return Ok(detail);
+                    }
+                    detail.files = response
+                        .get("files")
+                        .and_then(|v| v.as_array())
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|file| Some(MarketSkillFile {
+                            path: file.get("path")?.as_str()?.to_string(),
+                            size_bytes: number(file.get("size")),
+                        }))
+                        .collect();
+                    if detail.files.iter().any(|file| file.path.eq_ignore_ascii_case("SKILL.md")) {
+                        let file_url = if version_query.is_empty() {
+                            format!("{base}/file?path=SKILL.md")
+                        } else {
+                            format!("{base}/file?path=SKILL.md&{version_query}")
+                        };
+                        match http_get_text(&file_url) {
+                            Ok(content) if !content.trim_start().starts_with("{\"error\"") => {
+                                detail.skill_md = content;
+                            }
+                            Ok(_) => detail.preview_error = "官方文件预览暂时不可用".into(),
+                            Err(error) => detail.preview_error = error,
+                        }
+                    } else {
+                        detail.preview_error = "该技能没有公开 SKILL.md 预览".into();
+                    }
+                }
+                Err(error) => detail.preview_error = format!("解析文件清单失败: {error}"),
+            }
+        }
+        Err(error) => detail.preview_error = error,
+    }
+    Ok(detail)
 }
 
 /// 腾讯 SkillHub 安装：CLI install --namespace --dir

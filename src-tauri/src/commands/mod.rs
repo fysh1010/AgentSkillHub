@@ -9,6 +9,11 @@ pub mod market;
 pub mod scan;
 pub mod security;
 pub mod tokens;
+pub mod mcp;
+pub mod mcp_catalog;
+pub mod mcp_probe;
+pub mod skill_sync;
+pub mod updates;
 
 use crate::models::*;
 use std::path::PathBuf;
@@ -406,7 +411,11 @@ pub async fn refresh_discovery(state: State<'_, AppState>) -> Result<MachineInve
     let bases = agent_bases().ok_or("无法定位当前用户目录")?;
     let cfg = state.config.lock().unwrap().clone();
     let registered = cfg.agents.clone();
-    let mut result = tauri::async_runtime::spawn_blocking(move || discovery::inventory(&bases, &registered))
+    let mut result = tauri::async_runtime::spawn_blocking(move || {
+        let mut result = discovery::inventory(&bases, &registered);
+        discovery::append_custom_sources(&mut result, &cfg.builtin_sources);
+        result
+    })
         .await.map_err(|e| format!("本机发现失败：{e}"))?;
     // 扫描期间开关可能被修改，使用提交时的最新配置进行标注。
     let current = state.config.lock().unwrap();
@@ -574,6 +583,13 @@ pub async fn market_list_ex(
     tauri::async_runtime::spawn_blocking(task)
         .await
         .map_err(|e| format!("市场任务异常: {e}"))?
+}
+
+#[tauri::command]
+pub async fn market_skill_detail(slug: String) -> Result<crate::models::MarketSkillDetail, String> {
+    tauri::async_runtime::spawn_blocking(move || market::skillhub_detail(&slug))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// 从市场安装技能到技能库根目录（async：下载+解压较慢，避免卡住窗口）
@@ -859,31 +875,39 @@ pub fn adopt_skill(
 // ================= 工具内置技能来源（插件缓存 / IDE 内置技能包）=================
 
 /// 这些目录由对应工具自己写入与升级，本工具只读浏览、按需收编副本，绝不往里做链接部署。
-/// source_id 只能取自内置清单解析出的结果，不接受前端传路径。
-fn builtin_source_dir(source_id: &str) -> Result<String, String> {
+/// 只从自动发现结果或用户已保存的来源中解析 ID。
+fn builtin_source(source_id: &str, configs: &[CustomBuiltinSource]) -> Result<BuiltinSource, String> {
+    if let Some(config) = configs.iter().find(|s| s.id == source_id) {
+        return discovery::custom_source(config);
+    }
     let bases = agent_bases().ok_or("无法定位用户主目录")?;
-    discovery::source_dir(&bases, source_id)
-        .map(|p| p.to_string_lossy().to_string())
+    discovery::source_by_id(&bases, source_id)
         .ok_or_else(|| format!("内置技能来源不存在或已被清理: {source_id}"))
 }
 
 /// 本机检测到的内置技能来源
 #[tauri::command]
-pub async fn detect_builtin_sources() -> Result<Vec<DetectedAgent>, String> {
+pub async fn detect_builtin_sources(state: State<'_, AppState>) -> Result<Vec<DetectedAgent>, String> {
+    let configs = state.config.lock().unwrap().builtin_sources.clone();
     let Some(bases) = agent_bases() else {
         return Ok(Vec::new());
     };
-    tauri::async_runtime::spawn_blocking(move || discovery::inventory(&bases, &[]).sources.into_iter()
-        .map(|s| DetectedAgent { id: s.id, name: s.name, skills_dir: s.skills_dir, group: s.group }).collect())
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut result = discovery::inventory(&bases, &[]);
+        discovery::append_custom_sources(&mut result, &configs);
+        result.sources.into_iter()
+            .map(|s| DetectedAgent { id: s.id, name: s.name, skills_dir: s.skills_dir, group: s.group }).collect()
+    })
         .await.map_err(|e| format!("内置技能发现失败：{e}"))
 }
 
 /// 某来源里的技能清单（只读）
 #[tauri::command]
-pub async fn builtin_source_skills(source_id: String) -> Result<Vec<ExternalSkill>, String> {
+pub async fn builtin_source_skills(state: State<'_, AppState>, source_id: String) -> Result<Vec<ExternalSkill>, String> {
+    let configs = state.config.lock().unwrap().builtin_sources.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let dir = builtin_source_dir(&source_id)?;
-        Ok(discovery::source_skills(std::path::Path::new(&dir)))
+        let source = builtin_source(&source_id, &configs)?;
+        Ok(discovery::selected_source_skills(&source))
     }).await.map_err(|e| format!("读取内置技能失败：{e}"))?
 }
 
@@ -895,16 +919,52 @@ pub async fn adopt_builtin_skill(
     dir_name: String,
 ) -> Result<String, String> {
     let root = state.config.lock().unwrap().skills_root.clone();
+    let configs = state.config.lock().unwrap().builtin_sources.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let dir = builtin_source_dir(&source_id)?;
-        if !discovery::source_skills(std::path::Path::new(&dir)).iter().any(|s| s.dir_name == dir_name) {
+        let source = builtin_source(&source_id, &configs)?;
+        if !source.skill_dirs.iter().any(|name| name == &dir_name) {
             return Err("来源中不存在该标准技能".into());
         }
-        market::adopt(&dir, &dir_name, &root)
+        market::adopt(&source.skills_dir, &dir_name, &root)
     }).await.map_err(|e| format!("收编技能失败：{e}"))?
 }
 
 // ================= 安全扫描 =================
+
+#[tauri::command]
+pub fn save_builtin_source(state: State<AppState>, mut source: CustomBuiltinSource) -> Result<AppConfig, String> {
+    source.tool_name = source.tool_name.trim().into();
+    source.name = source.name.trim().into();
+    source.skills_dir = source.skills_dir.trim().into();
+    let checked = discovery::custom_source(&source)?;
+    {
+        let mut cfg = state.config.lock().unwrap();
+        if !source.id.is_empty() && !cfg.builtin_sources.iter().any(|s| s.id == source.id) {
+            return Err("来源已被移除，请重新添加".into());
+        }
+        let target = std::fs::canonicalize(&source.skills_dir).map_err(|e| format!("无法读取来源目录：{e}"))?;
+        if cfg.builtin_sources.iter().any(|s| {
+            let existing = std::fs::canonicalize(&s.skills_dir).unwrap_or_else(|_| PathBuf::from(&s.skills_dir));
+            s.id != source.id && known_agents::eq_path(&existing, &target)
+        }) {
+            return Err("此技能目录已配置，请编辑已有来源".into());
+        }
+        source.id = checked.id;
+        source.skills_dir = checked.skills_dir;
+        if let Some(existing) = cfg.builtin_sources.iter_mut().find(|s| s.id == source.id) { *existing = source; }
+        else { cfg.builtin_sources.push(source); }
+    }
+    save_config(&state)?;
+    Ok(state.config.lock().unwrap().clone())
+}
+
+/// 仅移除本应用的来源记录，不删除或修改来源文件。
+#[tauri::command]
+pub fn remove_builtin_source(state: State<AppState>, id: String) -> Result<AppConfig, String> {
+    state.config.lock().unwrap().builtin_sources.retain(|s| s.id != id);
+    save_config(&state)?;
+    Ok(state.config.lock().unwrap().clone())
+}
 
 /// 单技能内容级安全扫描（async：要读技能目录内多个文本文件）
 #[tauri::command]
