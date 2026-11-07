@@ -85,9 +85,13 @@ impl Scope {
 
 /// 关闭 Job 会清理本次启动的整个进程树，不影响用户已运行的 Agent。
 #[cfg(windows)]
-struct ProcessJob(windows_sys::Win32::Foundation::HANDLE);
+pub(super) struct ProcessJob(windows_sys::Win32::Foundation::HANDLE);
 #[cfg(windows)]
 impl ProcessJob {
+    pub(super) fn try_attach(child: &Child) -> Option<Self> {
+        Self::attach(child).ok()
+    }
+
     fn attach(child: &Child) -> Result<Self> {
         use std::os::windows::io::AsRawHandle;
         use windows_sys::Win32::{Foundation::CloseHandle, System::JobObjects::*};

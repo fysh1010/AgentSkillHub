@@ -13,6 +13,7 @@ pub mod mcp;
 pub mod mcp_catalog;
 pub mod mcp_probe;
 pub mod skill_sync;
+pub mod skill_backup;
 pub mod updates;
 
 use crate::models::*;

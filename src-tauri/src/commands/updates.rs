@@ -94,17 +94,37 @@ fn official_url(value: &str, download: bool) -> bool {
     }
 }
 
+fn release_info(release_url: &str, now: u64) -> Result<UpdateInfo, String> {
+    let prefix = format!("https://github.com/{REPOSITORY}/releases/tag/");
+    let latest = release_url
+        .strip_prefix(&prefix)
+        .filter(|_| official_url(release_url, false))
+        .ok_or("Release 地址不是本项目的正式版本地址")?;
+    let latest_version = version(latest).ok_or("Release 版本号无效")?;
+    Ok(UpdateInfo {
+        current_version: CURRENT.into(),
+        latest_version: latest.into(),
+        available: latest_version > version(CURRENT).ok_or("客户端版本号无效")?,
+        release_url: release_url.into(),
+        download_url: String::new(),
+        notes: String::new(),
+        checked_at: now,
+    })
+}
+
 fn parse_release(value: &Value, now: u64) -> Result<UpdateInfo, String> {
     if value["draft"].as_bool() != Some(false) || value["prerelease"].as_bool() != Some(false) {
         return Err("该 Release 不是正式发布版本".into());
     }
     let latest = value["tag_name"].as_str().ok_or("Release 缺少版本号")?;
-    let latest_version = version(latest).ok_or("Release 版本号不符合 v主版本.次版本.补丁 格式")?;
     let release_url = value["html_url"]
         .as_str()
-        .filter(|url| official_url(url, false))
         .ok_or("Release 地址不是本项目官方地址")?;
-    let download = value["assets"]
+    let mut info = release_info(release_url, now)?;
+    if latest != info.latest_version {
+        return Err("Release 标签与发布地址不一致".into());
+    }
+    info.download_url = value["assets"]
         .as_array()
         .into_iter()
         .flatten()
@@ -114,19 +134,112 @@ fn parse_release(value: &Value, now: u64) -> Result<UpdateInfo, String> {
             (name.ends_with("-portable.zip") && official_url(url, true)).then(|| url.to_owned())
         })
         .unwrap_or_default();
-    Ok(UpdateInfo {
-        current_version: CURRENT.into(),
-        latest_version: latest.into(),
-        available: latest_version > version(CURRENT).ok_or("客户端版本号无效")?,
-        release_url: release_url.into(),
-        download_url: download,
-        notes: value["body"]
-            .as_str()
-            .unwrap_or("")
-            .chars()
-            .take(6000)
-            .collect(),
-        checked_at: now,
+    info.notes = value["body"]
+        .as_str()
+        .unwrap_or("")
+        .chars()
+        .take(6000)
+        .collect();
+    Ok(info)
+}
+
+fn request(url: &str, args: &[&str]) -> Result<String, String> {
+    let output = hidden_command("curl")
+        .args([
+            "-q", // 不读用户 curlrc，不跟随重定向。
+            "--silent",
+            "--show-error",
+            "--max-time",
+            "8",
+            "--proto",
+            "=https",
+            "--user-agent",
+            "AgentSkillHub",
+        ])
+        .args(args)
+        .arg(url)
+        .output()
+        .map_err(|e| format!("无法启动 curl：{e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "连接失败（curl {}）",
+            output.status.code().unwrap_or(-1)
+        ));
+    }
+    String::from_utf8(output.stdout).map_err(|_| "GitHub 响应不是有效的 UTF-8".into())
+}
+
+fn query_api(now: u64) -> Result<UpdateInfo, String> {
+    let response = request(
+        &format!("https://api.github.com/repos/{REPOSITORY}/releases/latest"),
+        &[
+            "--write-out",
+            "\n%{http_code}",
+            "-H",
+            "Accept: application/vnd.github+json",
+        ],
+    )?;
+    let (body, status) = response.rsplit_once('\n').ok_or("无法读取响应状态")?;
+    if status != "200" {
+        return Err(format!("HTTP {status}"));
+    }
+    let value: Value = serde_json::from_str(body).map_err(|_| "无法解析发布信息")?;
+    parse_release(&value, now)
+}
+
+fn redirect(url: &str) -> Result<(String, String), String> {
+    let response = request(
+        url,
+        &[
+            "--head",
+            "--output",
+            if cfg!(windows) { "NUL" } else { "/dev/null" },
+            "--write-out",
+            "%{http_code}\n%{redirect_url}",
+        ],
+    )?;
+    parse_redirect_response(&response)
+}
+
+fn parse_redirect_response(response: &str) -> Result<(String, String), String> {
+    response
+        .split_once('\n')
+        .map(|(code, target)| (code.trim_end_matches('\r').into(), target.into()))
+        .ok_or_else(|| "无法读取发布页响应".into())
+}
+
+fn parse_latest_redirect(code: &str, target: &str, now: u64) -> Result<UpdateInfo, String> {
+    if !matches!(code, "301" | "302" | "303" | "307" | "308") {
+        return Err(format!("最新发布页未返回版本跳转（HTTP {code}）"));
+    }
+    release_info(target, now)
+}
+
+fn query_release_page(now: u64) -> Result<UpdateInfo, String> {
+    let latest = format!("https://github.com/{REPOSITORY}/releases/latest");
+    let (code, target) = redirect(&latest).or_else(|_| redirect(&latest))?;
+    let mut info = parse_latest_redirect(&code, &target, now)?;
+    if info.available {
+        let tag = &info.latest_version;
+        let asset = format!("https://github.com/{REPOSITORY}/releases/download/{tag}/AgentSkillHub-{tag}-portable.zip");
+        // 只确认官方资产地址存在，不下载内容，也不跟随临时签名链接。
+        if let Ok((code, target)) = redirect(&asset) {
+            if code == "200"
+                || (code == "302"
+                    && target.starts_with("https://release-assets.githubusercontent.com/"))
+            {
+                info.download_url = asset;
+            }
+        }
+    }
+    Ok(info)
+}
+
+fn lookup_release(now: u64) -> Result<UpdateInfo, String> {
+    query_api(now).or_else(|api| {
+        query_release_page(now).map_err(|page| {
+            format!("无法检查更新：GitHub API（{api}），官方发布页（{page}）。请通过浏览器查看官方发布。")
+        })
     })
 }
 
@@ -152,50 +265,7 @@ pub async fn check_app_update(
                 }
             }
         }
-        let output = hidden_command("curl")
-            .args([
-                "-q", // 不读用户 curlrc，避免其改变输出格式或目标。
-                "--silent",
-                "--show-error",
-                "--max-time",
-                "20",
-                "--proto",
-                "=https",
-                "--write-out",
-                "\n%{http_code}",
-                "-H",
-                "Accept: application/vnd.github+json",
-                "-H",
-                "User-Agent: AgentSkillHub",
-                &format!("https://api.github.com/repos/{REPOSITORY}/releases/latest"),
-            ])
-            .output()
-            .map_err(|e| e.to_string())?;
-        if !output.status.success() {
-            return Err("无法读取 GitHub 最新版本，请检查网络或稍后重试".into());
-        }
-        let response =
-            String::from_utf8(output.stdout).map_err(|_| "GitHub 响应不是有效的 UTF-8")?;
-        let (body, status) = response
-            .rsplit_once('\n')
-            .ok_or("无法读取 GitHub 响应状态")?;
-        match status {
-            "200" => (),
-            "403" | "429" => {
-                return Err(
-                    "GitHub 暂时拒绝版本查询，可能已达到请求限额。请稍后重试，或打开官方发布页。"
-                        .into(),
-                )
-            }
-            "404" => return Err("GitHub 未返回正式发布版本。可打开官方发布页查看。".into()),
-            _ => {
-                return Err(format!(
-                    "GitHub 版本查询失败（HTTP {status}），可打开官方发布页查看。"
-                ))
-            }
-        }
-        let value: Value = serde_json::from_str(body).map_err(|e| e.to_string())?;
-        let info = parse_release(&value, now)?;
+        let info = lookup_release(now)?;
         super::mcp::write_recoverable(
             &cache,
             &serde_json::to_vec(&info).map_err(|e| e.to_string())?,
@@ -247,5 +317,37 @@ mod tests {
         assert!(!parse_release(&value, 42).unwrap().download_url.is_empty());
         value["prerelease"] = true.into();
         assert!(parse_release(&value, 42).is_err());
+    }
+
+    #[test]
+    fn latest_redirect_accepts_only_this_projects_stable_release() {
+        let official = "https://github.com/fysh1010/AgentSkillHub/releases/tag/v999.0.0";
+        let (code, target) = parse_redirect_response(&format!("302\r\n{official}")).unwrap();
+        let info = parse_latest_redirect(&code, &target, 42).unwrap();
+        assert_eq!(info.latest_version, "v999.0.0");
+        assert_eq!(info.checked_at, 42);
+        assert!(info.available);
+        assert!(info.download_url.is_empty());
+        assert!(parse_latest_redirect("200", official, 42).is_err());
+        for target in [
+            "https://github.com/other/project/releases/tag/v999.0.0",
+            "https://github.com/fysh1010/AgentSkillHub/releases/tag/v999.0.0-beta",
+            "https://github.com/fysh1010/AgentSkillHub/releases/tag/v999.0.0?download=1",
+        ] {
+            assert!(parse_latest_redirect("302", target, 42).is_err());
+        }
+    }
+
+    #[test]
+    #[ignore = "访问 GitHub 正式发布页；仅显式执行"]
+    fn real_github_release_lookup() {
+        let now = super::super::now_ts();
+        let page = query_release_page(now).expect("官方发布页应可解析");
+        let result = lookup_release(now).expect("应能检查正式更新");
+        assert!(official_url(&result.release_url, false));
+        println!(
+            "官方发布页：{}；实际版本检查：{}",
+            page.latest_version, result.latest_version
+        );
     }
 }

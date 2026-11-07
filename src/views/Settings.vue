@@ -5,6 +5,7 @@ import { setSkillsRoot, gitBackup, setTokenBudget, exportManifest, importManifes
 import AgentManager from "../components/AgentManager.vue";
 import BuiltinSkills from "../components/BuiltinSkills.vue";
 import SkillSync from "../components/SkillSync.vue";
+import SkillBackup from "../components/SkillBackup.vue";
 import UpdateSettings from "../components/UpdateSettings.vue";
 import pkg from "../../package.json";
 const tabs = [{id:"agents",name:"Agent 工具"},{id:"builtin",name:"工具技能"},{id:"general",name:"通用设置"},{id:"data",name:"数据与备份"}];
@@ -170,6 +171,7 @@ onMounted(loadLatestManifest);
 <UpdateSettings />
 <section class="card block"><h3>关于 AgentSkillHub</h3><p class="block-desc">v{{ pkg.version }} · 本地技能管理。路径跟随当前用户，统一使用黑白或蓝白配色。</p></section>
     </div><div v-else class="settings-section">
+    <SkillBackup />
     <SkillSync />
     <!-- Git 备份 -->
     <section class="card block">

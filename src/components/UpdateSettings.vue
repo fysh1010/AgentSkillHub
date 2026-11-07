@@ -12,7 +12,7 @@ async function toggle(event: Event) {
   <section class="card updates-card">
     <div class="updates-head"><h3>版本更新</h3><button class="btn" :disabled="busy" @click="check(true)">{{ busy ? '检查中…' : '检查新版本' }}</button></div>
     <p><label><input type="checkbox" :checked="automatic" @change="toggle" />启动时检查正式版本（每天最多一次）</label></p>
-    <p>只访问本项目 GitHub Releases；由你下载并更新客户端。</p>
+    <p>启动时自动检查版本。发现新版后，由你确认下载并运行新版。</p>
     <template v-if="info">
       <p>当前 {{ info.current_version }} · 最新 {{ info.latest_version }} · {{ info.available ? '发现新版本' : '当前无需更新' }}</p>
       <div class="updates-actions"><button class="btn" @click="open(info.release_url).catch(e => toast(String(e),'error'))">查看发布说明</button><button v-if="info.available && info.download_url" class="btn primary" @click="open(info.download_url).catch(e => toast(String(e),'error'))">下载更新</button></div>
