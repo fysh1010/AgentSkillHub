@@ -16,6 +16,7 @@ export async function verifyMaintenance({ invoke, root, checks, click, waitText,
   assert(await dom(() => { const button = document.querySelector('.nav-settings'); if (!button) return false; button.click(); return true; }));
   await waitText("数据与备份"); await click("数据与备份"); await waitText("GitHub 技能同步");
   assert.equal(await dom(() => document.querySelector('.sync-card input').value), "fixture-user/fixture-skills");
+  assert(await dom(() => [...document.querySelectorAll('.sync-card button')].some(b => b.textContent.includes('连接 / 登录'))));
   assert(await dom(() => [...document.querySelectorAll('.sync-card button')].some(b => b.textContent.includes('推送技能'))));
   assert(await dom(() => [...document.querySelectorAll('.sync-card button')].some(b => b.textContent.includes('拉取技能'))));
   const screenshot = await cdp("Page.captureScreenshot", { format: "png" });

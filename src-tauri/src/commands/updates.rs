@@ -74,7 +74,24 @@ fn official_url(value: &str, download: bool) -> bool {
     } else {
         format!("https://github.com/{REPOSITORY}/releases/tag/")
     };
-    value.starts_with(&prefix) && !value.contains(['\\', '\r', '\n'])
+    let Some(path) = value.strip_prefix(&prefix) else {
+        return false;
+    };
+    if download {
+        let Some((tag, asset)) = path.split_once('/') else {
+            return false;
+        };
+        version(tag).is_some()
+            && asset.ends_with("-portable.zip")
+            && asset
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || b"-_.".contains(&c))
+    } else {
+        version(path).is_some()
+            && path
+                .bytes()
+                .all(|c| c.is_ascii_digit() || b"v.".contains(&c))
+    }
 }
 
 fn parse_release(value: &Value, now: u64) -> Result<UpdateInfo, String> {
@@ -137,13 +154,15 @@ pub async fn check_app_update(
         }
         let output = hidden_command("curl")
             .args([
-                "--fail",
+                "-q", // 不读用户 curlrc，避免其改变输出格式或目标。
                 "--silent",
                 "--show-error",
                 "--max-time",
                 "20",
                 "--proto",
                 "=https",
+                "--write-out",
+                "\n%{http_code}",
                 "-H",
                 "Accept: application/vnd.github+json",
                 "-H",
@@ -155,7 +174,27 @@ pub async fn check_app_update(
         if !output.status.success() {
             return Err("无法读取 GitHub 最新版本，请检查网络或稍后重试".into());
         }
-        let value: Value = serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())?;
+        let response =
+            String::from_utf8(output.stdout).map_err(|_| "GitHub 响应不是有效的 UTF-8")?;
+        let (body, status) = response
+            .rsplit_once('\n')
+            .ok_or("无法读取 GitHub 响应状态")?;
+        match status {
+            "200" => (),
+            "403" | "429" => {
+                return Err(
+                    "GitHub 暂时拒绝版本查询，可能已达到请求限额。请稍后重试，或打开官方发布页。"
+                        .into(),
+                )
+            }
+            "404" => return Err("GitHub 未返回正式发布版本。可打开官方发布页查看。".into()),
+            _ => {
+                return Err(format!(
+                    "GitHub 版本查询失败（HTTP {status}），可打开官方发布页查看。"
+                ))
+            }
+        }
+        let value: Value = serde_json::from_str(body).map_err(|e| e.to_string())?;
         let info = parse_release(&value, now)?;
         super::mcp::write_recoverable(
             &cache,
@@ -169,7 +208,10 @@ pub async fn check_app_update(
 
 #[tauri::command]
 pub fn open_update_link(url: String) -> Result<(), String> {
-    if !official_url(&url, false) && !official_url(&url, true) {
+    if url != format!("https://github.com/{REPOSITORY}/releases/latest")
+        && !official_url(&url, false)
+        && !official_url(&url, true)
+    {
         return Err("只允许打开本项目官方 Release 或下载地址".into());
     }
     #[cfg(windows)]
@@ -197,6 +239,12 @@ mod tests {
         let info = parse_release(&value, 42).unwrap();
         assert!(info.available);
         assert!(info.download_url.is_empty());
+        assert!(!official_url(
+            "https://github.com/fysh1010/AgentSkillHub/releases/tag/../../",
+            false
+        ));
+        value["assets"][0]["browser_download_url"] = "https://github.com/fysh1010/AgentSkillHub/releases/download/v999.0.0/AgentSkillHub-v999.0.0-portable.zip".into();
+        assert!(!parse_release(&value, 42).unwrap().download_url.is_empty());
         value["prerelease"] = true.into();
         assert!(parse_release(&value, 42).is_err());
     }

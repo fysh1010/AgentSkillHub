@@ -103,7 +103,7 @@ C:\Users\xxx\.zcode\skills\xxx      → E:\my-skills\xxx
 
 ### 官方下载（Windows x64，免安装）
 
-前往 [最新 Release](https://github.com/fysh1010/AgentSkillHub/releases/latest) 下载 `AgentSkillHub-v0.6.0-portable.zip`，解压后双击 `AgentSkillHub.exe` 即可运行。
+前往 [最新 Release](https://github.com/fysh1010/AgentSkillHub/releases/latest) 下载对应版本的 `AgentSkillHub-v*-portable.zip`，解压后双击 `AgentSkillHub.exe` 即可运行。
 
 从 v0.3.0 开始，下载区只发布一个免安装 ZIP；旧版本安装包保留在历史 Release 中。
 

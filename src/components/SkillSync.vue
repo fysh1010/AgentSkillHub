@@ -21,15 +21,18 @@ async function saveSettings() {
   catch (e) { message.value = String(e); failed.value = true; }
   finally { busy.value = false; }
 }
-async function sync(operation: "push" | "pull") {
-  const warning = operation === "push"
+async function sync(operation: "connect" | "push" | "pull") {
+  if (operation !== "connect") {
+    const warning = operation === "push"
     ? `将把技能库 ${store.config?.skills_root} 中的技能提交并推送到 ${settings.repository}（${settings.branch}）。已有 Git 历史也会一并推送，请确认历史、技能正文及脚本中没有密钥或私人资料；目录名过滤无法识别正文中的秘密。是否继续？`
-    : `将从 ${settings.repository}（${settings.branch}）拉取技能到 ${store.config?.skills_root}。仅允许 Git 快进更新；有本地修改或分叉时停止。新技能不会自动分配给 Agent，是否继续？`;
-  if (!confirm(warning)) return;
+      : `将从 ${settings.repository}（${settings.branch}）拉取技能到 ${store.config?.skills_root}。仅允许快进更新；遇到文件覆盖或分叉时停止。新技能不会自动分配给 Agent，是否继续？`;
+    if (!confirm(warning)) return;
+  }
   busy.value = true; failed.value = false; message.value = "";
   try {
     await save(); message.value = await api.skillSyncRun(operation);
-    await loadAll(); toast(message.value, "success");
+    if (operation !== "connect") await loadAll();
+    toast(message.value, "success");
   } catch (e) { message.value = String(e); failed.value = true; }
   finally { busy.value = false; }
 }
@@ -38,13 +41,14 @@ async function sync(operation: "push" | "pull") {
 <template>
   <section class="card sync-card">
     <h3>GitHub 技能同步</h3>
-    <p>指定自己的专用技能仓库，在多台电脑间手动推送或拉取。使用本机 Git 凭证管理器登录；本软件不保存密码或令牌。</p>
+    <p>建议用自己 GitHub 账号下的 <strong>Private（私有）专用仓库</strong>。两台电脑填写同一仓库和分支，各自点击「连接 / 登录」验证访问权限。首次登录可能打开浏览器；凭证由本机 Git 凭证管理器保管。</p>
     <label>GitHub 仓库<input v-model="settings.repository" class="input" placeholder="owner/my-skills 或 https://github.com/owner/my-skills" :disabled="busy || !ready" /></label>
     <label>分支<input v-model="settings.branch" class="input" placeholder="main" :disabled="busy || !ready" /></label>
-    <p>请先在 GitHub 创建仓库。新电脑使用空技能库先拉取；切换电脑前先推送，另一台先拉取再安装新技能。技能库必须是独立目录，现有 origin 与分支必须匹配。</p>
-    <p>只同步标准技能目录；跳过隐藏文件、回收站、依赖、缓存及常见密钥文件。MCP 密钥、Agent 绝对路径和应用设置保留在各电脑本机。技能中的私人内容仍需自行检查；建议使用私有仓库。</p>
+    <p>有技能的电脑先推送，另一台先拉取。新接收端建议选择一个已创建的空目录；本机已有文件时，拉取会保留不冲突的文件。技能库必须是独立目录，现有 origin 与分支必须匹配。</p>
+    <p>推送跳过隐藏文件、回收站、依赖、缓存和常见凭证文件，并检查暂存文本中的常见私钥与令牌格式。应用设置、MCP 库和 Agent 分配不在同步范围内。私有仓库限制访问范围，推送前仍需检查技能内容和 Git 历史。</p>
     <div class="sync-actions">
       <button class="btn" :disabled="busy || !ready" @click="saveSettings">保存仓库</button>
+      <button class="btn" :disabled="busy || !ready || !settings.repository.trim()" @click="sync('connect')">连接 / 登录</button>
       <button class="btn primary" :disabled="busy || !ready" @click="sync('push')">推送技能 ↑</button>
       <button class="btn" :disabled="busy || !ready" @click="sync('pull')">拉取技能 ↓</button>
       <span v-if="busy">正在处理，请勿关闭应用…</span>

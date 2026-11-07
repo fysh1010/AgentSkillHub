@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useUpdates } from "../composables/useUpdates";
+import { officialReleases } from "../api/maintenance";
 import { toast } from "../store";
 const { info, busy, error, automatic, check, setAutomatic, open } = useUpdates();
 async function toggle(event: Event) {
@@ -18,6 +19,7 @@ async function toggle(event: Event) {
       <details v-if="info.notes"><summary>更新内容</summary><pre>{{ info.notes }}</pre></details>
     </template>
     <p v-if="error" role="alert">{{ error }}</p>
+    <button v-if="error || !info" class="btn" @click="open(officialReleases).catch(e => toast(String(e), 'error'))">查看官方发布</button>
   </section>
 </template>
 <style scoped>

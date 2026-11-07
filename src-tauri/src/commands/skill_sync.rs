@@ -95,19 +95,30 @@ pub fn save_skill_sync_settings(
 }
 
 fn git(root: &Path, args: &[&str]) -> Result<String, String> {
-    let mut child = hidden_command("git")
-        .args([
-            "-c",
-            "core.hooksPath=",
-            "-c",
-            "core.quotepath=false",
-            "-c",
-            "credential.interactive=false",
-        ])
+    Ok(run_git(root, args, false, false)?.unwrap_or_default())
+}
+
+fn run_git(
+    root: &Path,
+    args: &[&str],
+    login: bool,
+    allow_no_match: bool,
+) -> Result<Option<String>, String> {
+    let mut command = hidden_command("git");
+    command.args(["-c", "core.hooksPath=", "-c", "core.quotepath=false"]);
+    if login {
+        command
+            .args(["-c", "credential.interactive=true"])
+            .env_remove("GCM_INTERACTIVE");
+    } else {
+        command
+            .args(["-c", "credential.interactive=false"])
+            .env("GCM_INTERACTIVE", "Never");
+    }
+    let mut child = command
         .args(args)
         .current_dir(root)
         .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GCM_INTERACTIVE", "Never")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -119,7 +130,7 @@ fn git(root: &Path, args: &[&str]) -> Result<String, String> {
         std::thread::spawn(move || {
             let mut bytes = Vec::new();
             stream
-                .take(16 * 1024 * 1024)
+                .take(16 * 1024 * 1024 + 1)
                 .read_to_end(&mut bytes)
                 .map(|_| bytes)
         })
@@ -146,11 +157,19 @@ fn git(root: &Path, args: &[&str]) -> Result<String, String> {
         .join()
         .map_err(|_| "Git 错误读取失败")?
         .map_err(|e| e.to_string())?;
+    if stdout.len() > 16 * 1024 * 1024 {
+        return Err("Git 返回的文件列表过大，已停止同步".into());
+    }
+    if allow_no_match && status.code() == Some(1) && stdout.is_empty() && stderr.is_empty() {
+        return Ok(None);
+    }
     if !status.success() {
         let message = String::from_utf8_lossy(&stderr);
         return Err(format!("Git 操作失败：{}。认证失败请先在本机 Git 中登录；分支分叉需手动合并，本工具不会强制覆盖。", message.chars().take(1800).collect::<String>()));
     }
-    String::from_utf8(stdout).map_err(|_| "Git 返回了非 UTF-8 路径".into())
+    String::from_utf8(stdout)
+        .map(Some)
+        .map_err(|_| "Git 返回了非 UTF-8 路径".into())
 }
 
 fn blocked_part(part: &str) -> bool {
@@ -167,12 +186,34 @@ fn blocked_part(part: &str) -> bool {
                 | "logs"
                 | "credentials.json"
                 | "auth.json"
+                | "secrets.json"
+                | "secrets.yaml"
+                | "secrets.yml"
+                | "mcp.json"
+                | "mcp-config.json"
                 | "id_rsa"
                 | "id_ed25519"
+                | "id_ecdsa"
+                | "id_dsa"
         )
-        || name.ends_with(".pem")
-        || name.ends_with(".key")
-        || name.ends_with(".log")
+        || [
+            ".pem",
+            ".key",
+            ".log",
+            ".p12",
+            ".pfx",
+            ".ppk",
+            ".kdbx",
+            ".jks",
+            ".keystore",
+            ".env",
+        ]
+        .iter()
+        .any(|ext| name.ends_with(ext))
+}
+
+fn repo_metadata(path: &str) -> bool {
+    matches!(path, "README.md" | "LICENSE" | ".gitignore")
 }
 
 fn roots_for_paths(paths: &[String]) -> BTreeSet<String> {
@@ -184,10 +225,10 @@ fn roots_for_paths(paths: &[String]) -> BTreeSet<String> {
 
 fn validate_paths(paths: &[String], roots: &BTreeSet<String>) -> Result<(), String> {
     for path in paths {
-        if matches!(path.as_str(), "README.md" | "LICENSE" | ".gitignore") {
+        if repo_metadata(path) {
             continue;
         }
-        if path.contains('\\')
+        if path.contains(['\\', ':', '\r', '\n'])
             || path.split('/').any(blocked_part)
             || !roots
                 .iter()
@@ -197,6 +238,32 @@ fn validate_paths(paths: &[String], roots: &BTreeSet<String>) -> Result<(), Stri
                 "仓库含非技能或敏感文件，已停止同步：{path}。请使用专用技能仓库"
             ));
         }
+    }
+    Ok(())
+}
+
+// 检查实际暂存的文本；只报告路径，避免把命中的凭证值写进日志或界面。
+fn check_staged_credentials(root: &Path) -> Result<(), String> {
+    let output = run_git(
+        root,
+        &[
+            "grep",
+            "--cached",
+            "-I",
+            "-l",
+            "-z",
+            "-E",
+            "-e",
+            "-----BEGIN ([A-Z0-9]+ )*PRIVATE KEY-----",
+            "-e",
+            "(gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{60,}|AKIA[A-Z0-9]{16})",
+        ],
+        false,
+        true,
+    )?;
+    if let Some(paths) = output {
+        let first = paths.split('\0').next().unwrap_or_default();
+        return Err(format!("暂存文件疑似含私钥、GitHub 令牌或 AWS 访问密钥 ID，已停止推送：{first}。请检查并将真实凭证改为本机读取"));
     }
     Ok(())
 }
@@ -251,7 +318,24 @@ fn tree_paths(root: &Path, reference: &str) -> Result<Vec<String>, String> {
 
 fn sync(root: &Path, settings: &SyncSettings, operation: &str) -> Result<String, String> {
     let remote = validate(settings)?;
+    if operation == "connect" {
+        // 从临时目录发起，首次登录也不需要初始化技能库。
+        let dir = std::env::temp_dir();
+        run_git(&dir, &["ls-remote", "--heads", &remote], true, false)?;
+        return Ok("已连接 GitHub 仓库，当前 Git 账号可读取仓库。推送还需要写入权限。".into());
+    }
     sync_repository(root, &remote, &settings.branch, operation)
+}
+
+fn fast_forward(root: &Path, reference: &str) -> Result<(), String> {
+    if !git(root, &["status", "--porcelain", "--untracked-files=no"])?.is_empty() {
+        return Err("本地已跟踪文件有未提交修改，请先处理本地修改再拉取。".into());
+    }
+    git(
+        root,
+        &["merge", "--ff-only", "--no-overwrite-ignore", reference],
+    )?;
+    Ok(())
 }
 
 fn sync_repository(
@@ -294,14 +378,6 @@ fn sync_repository(
     {
         return Err("技能库存在已暂存修改，请先完成本地 Git 操作".into());
     }
-    let exclude = root.join(".git/info/exclude");
-    let mut ignored = fs::read_to_string(&exclude).unwrap_or_default();
-    let marker = "# AgentSkillHub local-only files";
-    if !ignored.contains(marker) {
-        ignored.push_str("\n# AgentSkillHub local-only files\n**/.*\n_archive/\n_tmp/\n**/node_modules/\n**/target/\n**/dist/\n**/cache/\n**/logs/\n**/*.pem\n**/*.key\n**/*.log\n**/auth.json\n**/credentials.json\n**/id_rsa\n**/id_ed25519\n");
-        fs::create_dir_all(exclude.parent().unwrap()).map_err(|e| e.to_string())?;
-        fs::write(&exclude, ignored).map_err(|e| e.to_string())?;
-    }
     let tracked: Vec<_> = git(root, &["ls-files", "-z"])?
         .split('\0')
         .filter(|s| !s.is_empty())
@@ -314,19 +390,31 @@ fn sync_repository(
         }
     }
     validate_paths(&tracked, &roots)?;
-    if let Ok(existing) = git(root, &["remote", "get-url", "origin"]) {
-        if existing.trim().trim_end_matches(".git") != remote.trim_end_matches(".git") {
-            return Err("origin 与设置的仓库不同；请使用另一份技能库或手动检查远程地址，软件不会替换既有 origin".into());
-        }
-    } else {
+    if !git(root, &["remote"])?.lines().any(|name| name == "origin") {
         git(root, &["remote", "add", "origin", remote])?;
+    }
+    let check_url = |args: &[&str]| -> Result<(), String> {
+        let urls = git(root, args)?;
+        let matches = urls.lines().count() == 1
+            && urls
+                .trim()
+                .trim_end_matches(".git")
+                .eq_ignore_ascii_case(remote.trim_end_matches(".git"));
+        if !matches {
+            return Err("origin 与设置的仓库不同，请检查 Git 的远端地址、推送地址或 URL 重写规则。软件不会修改现有 origin。".into());
+        }
+        Ok(())
+    };
+    check_url(&["remote", "get-url", "--all", "origin"])?;
+    if operation == "push" {
+        check_url(&["remote", "get-url", "--push", "--all", "origin"])?;
     }
     let reference = format!("refs/heads/{}", branch_name);
     let exists = !git(root, &["ls-remote", "--heads", "origin", &reference])?
         .trim()
         .is_empty();
     let remote_ref = format!("refs/remotes/origin/{}", branch_name);
-    if exists {
+    let remote_paths = if exists {
         git(
             root,
             &[
@@ -338,27 +426,45 @@ fn sync_repository(
         )?;
         let paths = tree_paths(root, &remote_ref)?;
         validate_paths(&paths, &roots_for_paths(&paths))?;
-    }
+        paths
+    } else {
+        Vec::new()
+    };
+    let head = git(root, &["rev-parse", "--verify", "HEAD"]).ok();
     if operation == "pull" {
         if !exists {
             return Err("远端分支尚不存在，请先从有技能的电脑推送".into());
         }
-        if !git(root, &["status", "--porcelain"])?.trim().is_empty() {
-            return Err("本地存在未提交或未跟踪文件，请先备份并提交；拉取不会覆盖本地文件".into());
+        if let Some(head) = &head {
+            if git(root, &["merge-base", "--is-ancestor", &remote_ref, "HEAD"]).is_ok() {
+                return if head.trim() == git(root, &["rev-parse", &remote_ref])?.trim() {
+                    Ok("本机已同步到远端最新版本；本地未提交文件保持原样。".into())
+                } else {
+                    Ok("本机已包含远端版本，另有本地提交尚未推送。".into())
+                };
+            }
         }
-        git(root, &["merge", "--ff-only", &remote_ref])?;
+        fast_forward(root, &remote_ref)?;
         return Ok("技能已拉取到本机技能库；请在 Agent 配置中选择并部署所需技能".into());
     }
     if roots.is_empty() {
         return Err("没有找到有效技能，未创建提交".into());
     }
-    // 推送前先快进远端；双方都有提交时停止，用户可手动合并。
+    // 首次上传时可接上 GitHub 创建仓库时生成的 README / LICENSE / .gitignore。
+    let mut head = head;
     if exists {
-        if git(root, &["rev-parse", "--verify", "HEAD"]).is_err() {
-            return Err("远程仓库已有内容，请先用空技能目录拉取，再安装本地技能".into());
-        }
-        if git(root, &["merge-base", "--is-ancestor", &remote_ref, "HEAD"]).is_err() {
-            return Err("远端有更新，请先提交本地快照并拉取；发生分叉需手动合并".into());
+        if head.is_none() {
+            if !remote_paths.iter().all(|path| repo_metadata(path)) {
+                return Err(
+                    "远端已有技能。请先拉取，遇到同名文件时用独立技能目录拉取后再合并。".into(),
+                );
+            }
+            fast_forward(root, &remote_ref)?;
+            head = Some(git(root, &["rev-parse", "--verify", "HEAD"])?);
+        } else if git(root, &["merge-base", "--is-ancestor", &remote_ref, "HEAD"]).is_err() {
+            return Err(
+                "远端有更新或分支已分叉。请先拉取；若有冲突或分叉，请备份后手动处理。".into(),
+            );
         }
     }
     // 分别暂存安全文件与已跟踪的删除项；绝不 add 整个技能库。
@@ -387,24 +493,51 @@ fn sync_repository(
     paths.sort();
     paths.dedup();
     validate_paths(&paths, &roots)?;
-    // 身份缺失时在暂存前失败，用户完成本机 Git 登录/身份配置后可直接重试。
-    if !git(root, &["status", "--porcelain"])?.trim().is_empty() {
-        git(root, &["var", "GIT_AUTHOR_IDENT"])?;
-        git(root, &["var", "GIT_COMMITTER_IDENT"])?;
+    let commit_result = (|| {
+        for chunk in paths.chunks(40) {
+            let mut args = vec!["add", "-A", "--"];
+            let literal: Vec<_> = chunk.iter().map(|p| format!(":(literal){p}")).collect();
+            args.extend(literal.iter().map(String::as_str));
+            git(root, &args)?;
+        }
+        let tree = git(root, &["write-tree"])?;
+        let staged = tree_paths(root, tree.trim())?;
+        let staged_roots = roots_for_paths(&staged);
+        validate_paths(&staged, &staged_roots)?;
+        if staged_roots.is_empty() && head.is_none() {
+            return Err("没有可推送的技能，请检查技能目录和 Git 忽略规则".into());
+        }
+        check_staged_credentials(root)?;
+        if !git(root, &["diff", "--cached", "--name-only"])?
+            .trim()
+            .is_empty()
+        {
+            git(root, &["commit", "-m", "sync: update shared skills"])?;
+        }
+        Ok::<_, String>(())
+    })();
+    if let Err(error) = commit_result {
+        // 入口已确认没有用户暂存的改动。仅恢复索引，不触碰工作区。
+        let args = [
+            "read-tree",
+            head.as_deref().map(str::trim).unwrap_or("--empty"),
+        ];
+        return Err(match git(root, &args) {
+            Ok(_) => error,
+            Err(restore) => format!("{error}\n暂存区恢复失败：{restore}"),
+        });
     }
-    for chunk in paths.chunks(40) {
-        let mut args = vec!["add", "-A", "--"];
-        let literal: Vec<_> = chunk.iter().map(|p| format!(":(literal){p}")).collect();
-        args.extend(literal.iter().map(String::as_str));
-        git(root, &args)?;
-    }
-    if !git(root, &["diff", "--cached", "--name-only"])?
-        .trim()
-        .is_empty()
-    {
-        git(root, &["commit", "-m", "sync: update shared skills"])?;
-    }
-    git(root, &["push", "origin", &format!("HEAD:{reference}")])?;
+    git(
+        root,
+        &[
+            "-c",
+            "remote.origin.mirror=false",
+            "push",
+            "--no-follow-tags",
+            "origin",
+            &format!("HEAD:{reference}"),
+        ],
+    )?;
     Ok("技能已推送到指定 GitHub 仓库；另一台电脑可使用相同仓库与分支拉取".into())
 }
 
@@ -487,7 +620,7 @@ mod tests {
     }
 
     #[test]
-    fn two_computers_round_trip_excludes_secrets_and_rejects_divergence() {
+    fn two_computers_round_trip_excludes_secrets_and_rejects_overlap() {
         let tmp = super::super::test_scratch("sync_two_computers");
         let remote = tmp.join("remote.git");
         fs::create_dir_all(&remote).unwrap();
@@ -502,15 +635,28 @@ mod tests {
         }
         fixture_skill(&a, "example");
         fs::write(a.join("example/.env"), "TOKEN=fixture-only").unwrap();
+        fs::write(a.join("example/cert.PFX"), b"fixture-cert").unwrap();
         fs::write(a.join("example/_icon.png"), b"fixture-icon").unwrap();
         fs::create_dir_all(a.join("_archive/old")).unwrap();
         fs::write(a.join("_archive/old/private.txt"), "local-only").unwrap();
+        fs::write(a.join("example/notes.txt"), "-----BEGIN PRIVATE KEY-----").unwrap();
+        let error = sync_repository(&a, &remote, "main", "push").unwrap_err();
+        assert!(error.contains("example/notes.txt"));
+        assert!(!error.contains("BEGIN PRIVATE KEY"));
+        assert!(git(&a, &["ls-files"]).unwrap().is_empty());
+        fs::write(a.join("example/notes.txt"), "ordinary documentation").unwrap();
         sync_repository(&a, &remote, "main", "push").unwrap();
+        fs::write(b.join("local-notes.txt"), "keep local").unwrap();
         sync_repository(&b, &remote, "main", "pull").unwrap();
         assert!(b.join("example/SKILL.md").is_file());
         assert!(b.join("example/_icon.png").is_file());
         assert!(!b.join("example/.env").exists());
+        assert!(!b.join("example/cert.PFX").exists());
         assert!(!b.join("_archive").exists());
+        assert_eq!(
+            fs::read_to_string(b.join("local-notes.txt")).unwrap(),
+            "keep local"
+        );
         fixture_skill(&b, "second");
         sync_repository(&b, &remote, "main", "push").unwrap();
         sync_repository(&a, &remote, "main", "pull").unwrap();
@@ -519,10 +665,54 @@ mod tests {
         fixture_skill(&a, "home-new");
         sync_repository(&a, &remote, "main", "push").unwrap();
         fixture_skill(&b, "work-new");
-        assert!(sync_repository(&b, &remote, "main", "pull").is_err());
         assert!(sync_repository(&b, &remote, "main", "push").is_err());
+        fs::create_dir_all(b.join("home-new")).unwrap();
+        fs::write(b.join("home-new/SKILL.md"), "keep local skill").unwrap();
+        fs::write(b.join(".git/info/exclude"), "home-new/\n").unwrap();
+        assert!(sync_repository(&b, &remote, "main", "pull").is_err());
+        assert_eq!(
+            fs::read_to_string(b.join("home-new/SKILL.md")).unwrap(),
+            "keep local skill"
+        );
+        fs::rename(b.join("home-new"), b.join("saved-local")).unwrap();
+        sync_repository(&b, &remote, "main", "pull").unwrap();
         assert!(b.join("work-new/SKILL.md").is_file());
-        assert!(!b.join("home-new").exists());
+        assert!(b.join("home-new/SKILL.md").is_file());
+    }
+
+    #[test]
+    fn first_push_preserves_initialized_remote_metadata() {
+        let tmp = super::super::test_scratch("sync_initialized_remote");
+        let remote = tmp.join("remote");
+        let local = tmp.join("local");
+        for dir in [&remote, &local] {
+            fs::create_dir_all(dir).unwrap();
+            git(dir, &["init", "-b", "main"]).unwrap();
+            fixture_identity(dir);
+        }
+        git(
+            &remote,
+            &["config", "receive.denyCurrentBranch", "updateInstead"],
+        )
+        .unwrap();
+        fs::write(remote.join("README.md"), "initial readme").unwrap();
+        git(&remote, &["add", "README.md"]).unwrap();
+        git(&remote, &["commit", "-m", "initial readme"]).unwrap();
+        let initial = git(&remote, &["rev-parse", "HEAD"]).unwrap();
+        fixture_skill(&local, "example");
+        sync_repository(
+            &local,
+            &remote.to_string_lossy().replace('\\', "/"),
+            "main",
+            "push",
+        )
+        .unwrap();
+        assert_eq!(git(&remote, &["rev-parse", "HEAD^"]).unwrap(), initial);
+        assert!(remote.join("example/SKILL.md").is_file());
+        assert_eq!(
+            fs::read_to_string(local.join("README.md")).unwrap(),
+            "initial readme"
+        );
     }
 
     #[test]
