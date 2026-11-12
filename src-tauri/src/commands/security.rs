@@ -5,7 +5,7 @@
 //! 延续项目零依赖原则：全部固定字面量匹配（小写化 + contains），
 //! 词边界与超长编码串均为手写检测，不引入 regex。
 
-use crate::models::{SecurityFinding, SecurityReport, SecuritySummaryItem, SkillInfo};
+use crate::models::{SecurityFinding, SecurityReport, SecuritySummaryItem};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -293,6 +293,12 @@ fn report_cache() -> &'static crate::commands::cache::MtimeCache<SecurityReport>
     CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
 }
 
+fn summary_cache() -> &'static crate::commands::cache::MtimeCache<SecuritySummaryItem> {
+    static CACHE: std::sync::OnceLock<crate::commands::cache::MtimeCache<SecuritySummaryItem>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
 /// 单技能内容级扫描入口（带目录指纹缓存）
 pub fn scan_skill_security(root: &str, key: &str) -> SecurityReport {
     let Some(dir) = crate::commands::scan::resolve_skill_target(root, key) else {
@@ -303,6 +309,10 @@ pub fn scan_skill_security(root: &str, key: &str) -> SecurityReport {
             scanned_files: 0,
         }
     };
+    scan_cached(key, dir)
+}
+
+fn scan_cached(key: &str, dir: PathBuf) -> SecurityReport {
     let fingerprint = crate::commands::scan::dir_fingerprint(&dir);
     let skill_key = key.to_string();
     crate::commands::cache::cached(report_cache(), dir.clone(), fingerprint, move || {
@@ -352,18 +362,21 @@ fn level_rank(l: &str) -> u8 {
 
 /// 全库汇总（技能列表 badge 用），按 level 降序 + key 排序
 pub fn scan_security_summary(root: &str) -> Vec<SecuritySummaryItem> {
-    let skills: Vec<SkillInfo> = crate::commands::scan::scan_skills(root);
     let mut out = Vec::new();
-    for s in &skills {
-        let rep = scan_skill_security(root, &s.key);
-        out.push(SecuritySummaryItem {
-            high: rep.findings.iter().filter(|f| f.level == "high").count() as u32,
-            medium: rep.findings.iter().filter(|f| f.level == "medium").count() as u32,
-            low: rep.findings.iter().filter(|f| f.level == "low").count() as u32,
-            skill_key: s.key.clone(),
-            level: rep.level,
-        });
-    }
+    crate::commands::scan::visit_skills(root, |dir, _, _, key| {
+        let fingerprint = crate::commands::scan::dir_fingerprint(&dir);
+        // 列表只缓存计数和等级；需要查看证据时才保留完整报告。
+        out.push(crate::commands::cache::cached(summary_cache(), dir.clone(), fingerprint, || {
+            let rep = scan_dir(&key, &dir);
+            SecuritySummaryItem {
+                high: rep.findings.iter().filter(|f| f.level == "high").count() as u32,
+                medium: rep.findings.iter().filter(|f| f.level == "medium").count() as u32,
+                low: rep.findings.iter().filter(|f| f.level == "low").count() as u32,
+                skill_key: key,
+                level: rep.level,
+            }
+        }));
+    });
     out.sort_by(|a, b| level_rank(&a.level).cmp(&level_rank(&b.level)).then(a.skill_key.cmp(&b.skill_key)));
     out
 }

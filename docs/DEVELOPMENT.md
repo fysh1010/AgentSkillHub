@@ -99,10 +99,10 @@ AppState { config: Mutex<AppConfig> }  文件系统（技能库 / Agent 目录 /
   （如 `~/.meituan-catpaw/*/skills`），不进入插件缓存与安装包，
   展开后 id 追加实例名（`meituan-catpaw-anon`）以免撞注册表主键；
 - `KNOWN_SOURCES`：明确的系统技能目录（WorkBuddy / Codex 的 `.system`、WPS 灵犀的 `official_skills`）。这些**不**作为可部署 Agent 注册，
-  只由 `detect_builtin_sources` / `builtin_source_skills` / `adopt_builtin_skill` 三个命令做只读浏览与收编；
+  由 `refresh_discovery` 列出来源，`builtin_source_skills` 浏览，`adopt_builtin_skill` 收编副本；
   命令只认 source_id（后端按清单解析路径），前端传不进任意路径；`detect_sources` 还要求目录非空；
 - `detect_existing` 只报本机存在的目录；`template_path` 用于推导路径（通配项返回 None），目录存在不直接等同于程序已安装；
-- 清单未收录的新产品仍由 `detect_agents` 的通用 `~\.xxx\skills` 扫描兜底，显示名走 `name_for` 查表。
+- 清单未收录的新产品由 `refresh_discovery` 的通用 `~\.xxx\skills` 扫描兜底，显示名走 `name_for` 查表。
 
 ### cache.rs — 按指纹失效的缓存
 - `cached(cache, key, fingerprint, compute)`：命中返回缓存值，否则算一次并写入，超过 500 条清空；
@@ -114,10 +114,10 @@ AppState { config: Mutex<AppConfig> }  文件系统（技能库 / Agent 目录 /
 - **类型对齐**：`src/types.ts` 必须与 `src-tauri/src/models.rs` 保持一致（serde 默认蛇形命名）；
 - **全局状态**：`store.ts` —— `store`（技能/Agent/配置）、`ui.page`（跨页导航，
   App.vue watch 它）、`transMap`（翻译缓存）；
-- **页面切换**：`App.vue` 用 `shallowRef` + `<Transition name="page">`，无路由库；
+- **页面切换**：`App.vue` 用 `shallowRef` + `<Transition name="page">`，除总览外按需加载；
 - **样式**：主题变量在 `src/styles/global.css`（`--accent`、`--panel`、`--radius-sm` 等），
   页面级样式 scoped；默认黑白、可切换蓝白主题，交互强调色由共享变量控制；
-- **翻译队列**：`translateMany` 逐条 180ms 限流，避免打爆免费接口。
+- **技能描述翻译**：按需请求，同一原文在途去重，前端缓存最多保留 256 条。
 
 ## 6. 测试
 

@@ -363,6 +363,7 @@ mod tests {
 
     fn base_cfg(root: &Path, agent_dir: &Path) -> AppConfig {
         AppConfig {
+            skill_link_backups: Vec::new(),
             skills_root: root.to_string_lossy().to_string(),
             agents: vec![AgentDef {
                 id: "test".into(),

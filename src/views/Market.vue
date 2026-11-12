@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref, computed } from "vue";
+import { onMounted, onUnmounted, ref, computed } from "vue";
 import { store, loadAll, toast, toggleSkill, ensureTranslate, needsTranslation, transMap } from "../store";
 import {
   marketSources,
@@ -10,7 +10,6 @@ import {
   marketRemoveSource,
   ensureSkillIcon,
   deployAgent,
-  formatTs,
   scanSkillSecurity,
   formatBytes,
 } from "../api/tauri";
@@ -45,6 +44,7 @@ let detailRequest = 0;
 function closeDetail() {
   detailRequest++;
   selected.value = null;
+  detail.value = null;
   detailLoading.value = false;
 }
 
@@ -62,8 +62,13 @@ async function openDetail(skill: MarketSkill) {
   detailLoading.value = true;
   try {
     const result = await marketSkillDetail(skill.reference);
-    detailCache.set(key, result);
-    if (request === detailRequest) detail.value = result;
+    if (request === detailRequest) {
+      if (!result.preview_error) {
+        if (detailCache.size >= 8) detailCache.delete(detailCache.keys().next().value!);
+        detailCache.set(key, result);
+      }
+      detail.value = result;
+    }
   } catch (e) {
     if (request === detailRequest) detailError.value = String(e);
   } finally {
@@ -286,7 +291,11 @@ onMounted(() => {
     },
     { rootMargin: "400px" }
   );
-  observer.observe(sentinel.value!);
+  if (sentinel.value) observer.observe(sentinel.value);
+});
+onUnmounted(() => {
+  observer?.disconnect();
+  detailRequest++;
 });
 
 async function install(s: MarketSkill) {

@@ -17,28 +17,32 @@ static IO: Mutex<()> = Mutex::new(());
 static PLANS: Mutex<BTreeMap<String, Plan>> = Mutex::new(BTreeMap::new());
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
-/// 仅查询公开 Registry，不执行市场返回的命令。
+#[path = "mcp_market.rs"]
+pub mod market;
+
+/// 仅查询用户选择的公开目录，不执行市场返回的命令。
 #[tauri::command]
-pub async fn mcp_market_search(query: String, cursor: Option<String>) -> Result<Value, String> {
+pub async fn mcp_market_search(state: State<'_, AppState>, query: String, cursor: Option<String>, source_id: Option<String>) -> Result<Value, String> {
     if query.len() > 500 || cursor.as_ref().is_some_and(|s| s.len() > 2000) {
         return Err("搜索条件过长".into());
     }
-    tauri::async_runtime::spawn_blocking(move || {
-        fn escape(s: &str) -> String {
-            s.bytes().map(|b| if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
-                (b as char).to_string()
-            } else { format!("%{b:02X}") }).collect()
-        }
-        let mut url = format!("https://registry.modelcontextprotocol.io/v0.1/servers?version=latest&limit=30&search={}", escape(query.trim()));
-        if let Some(cursor) = cursor.filter(|s| !s.is_empty()) { url.push_str(&format!("&cursor={}", escape(&cursor))); }
-        let out = super::hidden_command("curl")
-            .args(["--fail", "--silent", "--show-error", "--location", "--proto", "=https", "--connect-timeout", "10", "--max-time", "25", "--max-filesize", "4194304", &url])
-            .output().map_err(|e| format!("无法连接 MCP 市场：{e}"))?;
-        if !out.status.success() { return Err("MCP 官方市场暂时无法访问，请检查网络后重试".into()); }
-        let result: Value = serde_json::from_slice(&out.stdout).map_err(|_| "MCP 市场响应格式错误")?;
-        if !result.get("servers").is_some_and(Value::is_array) { return Err("MCP 市场未返回服务列表".into()); }
-        Ok(result)
-    }).await.map_err(|e| e.to_string())?
+    let source = market::sources(&load(&state)?.market_sources).into_iter().find(|s|s.id==source_id.as_deref().unwrap_or("official")).ok_or("MCP 市场源不存在")?;
+    tauri::async_runtime::spawn_blocking(move || market::search(&source, &query, cursor.as_deref())).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub fn mcp_market_sources(state: State<'_, AppState>) -> Result<Vec<market::Source>, String> {
+    Ok(market::sources(&load(&state)?.market_sources))
+}
+
+#[tauri::command]
+pub fn mcp_save_market_sources(state: State<'_, AppState>, sources: Vec<market::Source>) -> Result<Vec<market::Source>, String> {
+    let _io = IO.lock().unwrap();
+    let sources = market::validate_sources(sources)?;
+    let mut data = load(&state)?;
+    data.market_sources = sources;
+    save(&state, &data)?;
+    Ok(market::sources(&data.market_sources))
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -58,6 +62,8 @@ pub struct Binding {
 }
 #[derive(Clone, Serialize, Deserialize, Default)]
 struct Store {
+    #[serde(default)]
+    market_sources: Vec<market::Source>,
     #[serde(default)]
     servers: BTreeMap<String, Server>,
     #[serde(default)]
@@ -108,7 +114,7 @@ pub struct Target {
     pub writable: bool,
     pub managed: Vec<String>,
     pub can_restore: bool,
-    /// MCP 只能在此工具自带界面内配置（如 Trae / 豆包），仅提供只读指引。
+    /// 尚无已验证文件适配的工具，仅支持在原工具中配置。
     pub app_managed: bool,
     pub guide: Option<super::mcp_catalog::Guide>,
     pub blocked_reason: String,
@@ -152,6 +158,15 @@ fn store_path(state: &AppState) -> Result<PathBuf, String> {
         .app_config_dir()
         .map_err(|e| e.to_string())?
         .join("mcp-library.json"))
+}
+
+pub(super) fn watch_paths(state: &AppState) -> Result<Vec<PathBuf>, String> {
+    // 此处只监测元数据；库内容损坏仍要让技能自动刷新，并能检测之后的修复。
+    let data = load(state).unwrap_or_default();
+    let mut paths = vec![store_path(state)?];
+    paths.extend(data.bindings.values().map(|b| PathBuf::from(&b.path)));
+    paths.extend(super::known_agents::KNOWN_AGENTS.iter().filter_map(|a| binding(a.id)).map(|b| PathBuf::from(b.path)));
+    Ok(paths)
 }
 fn load(state: &AppState) -> Result<Store, String> {
     let path = store_path(state)?;

@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
-import { store, openAgentSettings, discovery, discoverMachine, ensureTranslate, needsTranslation, transMap, isEnabled, ui, secLevels, loadSecuritySummary, tokenStats, refreshTokenStats } from "../store";
+import { computed, ref, watch } from "vue";
+import { store, openAgentSettings, openSkillAllocation, discovery, discoverMachine, ensureTranslate, needsTranslation, transMap, isEnabled, ui, tokenStats, refreshTokenStats } from "../store";
 import { useEsc } from "../composables/useEsc";
 import type { SkillInfo } from "../types";
 import BuiltinSkills from "../components/BuiltinSkills.vue";
@@ -12,10 +12,9 @@ useEsc(() => {
   else if (builtinFor.value) builtinFor.value = null;
 });
 
-onMounted(() => {
-  loadSecuritySummary().catch(() => {});
-  refreshTokenStats().catch(() => {});
-});
+watch(() => store.agents, (agents) => {
+  if (agents.length) void refreshTokenStats();
+}, { immediate: true });
 
 const totalSkills = computed(() => store.skills.length);
 const healthy = computed(() => store.skills.filter((s) => s.healthy).length);
@@ -50,7 +49,7 @@ const unassigned = computed(() =>
   store.skills.filter((s) => !agents.value.some((a) => isEnabled(a.agent.id, s.key)))
 );
 function gotoAgents() {
-  ui.page = "agents";
+  openSkillAllocation();
 }
 
 function formatTokens(n: number): string {
@@ -80,10 +79,6 @@ const configuredSkills = computed(() => {
 
 function openSkills(a: { id: string; name: string }) {
   skillsFor.value = { id: a.id, name: a.name };
-  // 打开后自动把英文描述翻成中文（走全局缓存，只翻一次）
-  configuredSkills.value.forEach((s) => {
-    if (s.info) ensureTranslate(s.info.description);
-  });
 }
 </script>
 
@@ -109,7 +104,7 @@ function openSkills(a: { id: string; name: string }) {
         <div class="stat-num">{{ totalSkills }}<span>个技能</span></div>
         <p class="stat-caption">{{ healthy }} 个技能元信息完整</p>
       </article>
-      <article class="card stat builtin-stat" role="button" tabindex="0" title="查看工具随附技能与插件缓存" @click="builtinFor = 'all'" @keydown.enter="builtinFor = 'all'" @keydown.space.prevent="builtinFor = 'all'">
+      <article class="card stat builtin-stat" role="button" tabindex="0" title="查看已开启工具的用户技能" @click="builtinFor = 'all'" @keydown.enter="builtinFor = 'all'" @keydown.space.prevent="builtinFor = 'all'">
         <div class="stat-heading"><span>工具技能目录</span><svg viewBox="0 0 24 24"><path d="M9 3H4v7h3a2 2 0 1 1 0 4H4v7h7v-3a2 2 0 1 1 4 0v3h5v-7h-3a2 2 0 1 1 0-4h3V3h-5v3a3 3 0 1 1-6 0V3Z" /></svg></div>
         <div class="stat-num">{{ nativeSkills }}<span>个条目</span></div>
         <p class="stat-caption">{{ builtinSources.length }} 处目录<span v-if="unverifiedCacheSkills"> · {{ unverifiedCacheSkills }} 个缓存待确认</span> · 查看 ↗</p>
@@ -117,7 +112,7 @@ function openSkills(a: { id: string; name: string }) {
       <article class="card stat">
         <div class="stat-heading"><span>已接入 Agent</span><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="13" rx="2"/><path d="M8 22h8M12 18v4M8 10h.01M16 10h.01M8 14h8"/></svg></div>
         <div class="stat-num">{{ agents.length }}<span>个工具</span></div>
-        <p class="stat-caption">仅显示本机已安装工具</p>
+        <p class="stat-caption">仅显示已开启管理的工具</p>
       </article>
       <article class="card stat">
         <div class="stat-heading"><span>待部署</span><svg viewBox="0 0 24 24"><path d="M12 3v12m-4-4 4 4 4-4M4 15v5h16v-5"/></svg></div>
@@ -198,15 +193,15 @@ function openSkills(a: { id: string; name: string }) {
       </div>
     </div>
 
-    <div class="section-heading"><div><h2 class="section-title">工具随附技能与缓存 <span>{{ nativeSkills }}</span></h2><p>区分系统技能、插件包和待确认缓存，点击查看清单与目录。</p></div><button class="section-link" @click="builtinFor = 'all'">查看全部 <span>↗</span></button></div>
+    <div class="section-heading"><div><h2 class="section-title">已开启工具的用户技能 <span>{{ nativeSkills }}</span></h2><p>查看用户安装或分配的技能，内置技能由原 Agent 管理。</p></div><button class="section-link" @click="builtinFor = 'all'">查看全部 <span>↗</span></button></div>
     <div class="builtin-product-grid" v-if="builtinProducts.length">
       <button v-for="product in builtinProducts" :key="product.name" class="card builtin-product" @click="builtinFor = product.name">
         <span class="builtin-product-mark">{{ product.name.slice(0, 2).toUpperCase() }}</span>
-        <span class="builtin-product-info"><b>{{ product.name }}</b><small>{{ product.sources }} 处来源 · {{ product.skills }} 个目录</small><small>{{ product.system }} 系统 · {{ product.skills - product.system - product.unverified - product.manual }} 插件<span v-if="product.manual"> · {{ product.manual }} 手动</span><span v-if="product.unverified"> · {{ product.unverified }} 待确认</span></small></span>
+        <span class="builtin-product-info"><b>{{ product.name }}</b><small>{{ product.sources }} 处来源 · {{ product.skills }} 个目录</small><small>用户安装 / 分配的技能</small></span>
         <span class="builtin-product-arrow">↗</span>
       </button>
     </div>
-    <div v-else class="card empty">{{ discovery.loading ? '正在扫描工具技能目录…' : '已安装工具暂未发现随附技能。' }}</div>
+    <div v-else class="card empty">{{ discovery.loading ? '正在扫描工具技能目录…' : '已开启的工具暂未发现用户技能。' }}</div>
 
     <p class="foot-note" v-if="readyAgents.length">
       {{ readyAgents.length }} 个 Agent 已就绪 · {{ pendingAgents.length }} 个待部署
@@ -230,10 +225,10 @@ function openSkills(a: { id: string; name: string }) {
           <div class="ext-note">
             配置方式：每个技能以 Windows Junction 链接（mklink /J）部署到该 Agent 的
             skills 目录，源文件始终唯一保存在技能库（{{ store.config?.skills_root }}）中，
-            删除链接不影响源文件。要增删技能请到「Agent 配置」页。
+            删除链接不影响源文件。要增删技能请到「技能库」的按 Agent 视图。
           </div>
           <div v-if="!configuredSkills.length" class="empty" style="padding: 24px">
-            还没有配置任何技能，去「Agent 配置」勾选吧。
+            还没有配置任何技能，去「技能库」的按 Agent 视图勾选吧。
           </div>
           <div v-else class="ext-list">
             <div v-for="s in configuredSkills" :key="s.key" class="ext-item">

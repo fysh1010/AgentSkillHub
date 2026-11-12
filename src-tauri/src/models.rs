@@ -80,17 +80,6 @@ pub struct AgentDef {
     pub builtin: bool,
 }
 
-/// 本机检测到、但尚未注册的 Agent
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DetectedAgent {
-    pub id: String,
-    pub name: String,
-    pub skills_dir: String,
-    /// 仅内置技能来源使用：所属产品名（同一产品的多个插件/场景归到一组）
-    #[serde(default)]
-    pub group: String,
-}
-
 /// 发现结果保留证据，配置目录本身不等于程序仍然安装。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DetectionEvidence {
@@ -329,6 +318,26 @@ pub struct AgentStatus {
     pub external_count: usize,
     pub drift: bool,
     pub message: String,
+    /// 磁盘上实际指向技能库的技能，不以期望配置冒充部署结果。
+    #[serde(default)]
+    pub assigned_skills: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillAssignment {
+    pub agent_id: String,
+    pub skill_key: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentOwnedSkill {
+    pub agent_id: String,
+    pub agent_name: String,
+    pub skill: SkillInfo,
+    pub linked: bool,
+    /// 同名的技能库条目；只作提示，不按名字判断内容相同。
+    pub library_key: Option<String>,
 }
 
 /// 部署结果
@@ -450,7 +459,22 @@ pub struct ManifestImportResult {
 
 /// 全局配置（持久化到 app_config_dir/config.json）
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillLinkBackup {
+    pub id: String,
+    pub agent_id: String,
+    pub skill_key: String,
+    pub original_path: String,
+    #[serde(default)]
+    pub link_path: String,
+    pub backup_path: String,
+    pub target: String,
+    pub fingerprint: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
+    #[serde(default)]
+    pub skill_link_backups: Vec<SkillLinkBackup>,
     #[serde(default)]
     pub builtin_sources: Vec<CustomBuiltinSource>,
     pub skills_root: String,
@@ -477,6 +501,7 @@ fn default_token_budget() -> u64 {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
+            skill_link_backups: Vec::new(),
             builtin_sources: Vec::new(),
             skills_root: String::new(),
             agents: Vec::new(),
@@ -496,4 +521,6 @@ pub struct SyncResult {
     pub skills: Vec<SkillInfo>,
     pub agents: Vec<AgentStatus>,
     pub config: AppConfig,
+    #[serde(default)]
+    pub owned_skills: Vec<AgentOwnedSkill>,
 }

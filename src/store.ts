@@ -8,13 +8,16 @@ import type {
   DeleteResult,
   AgentTokenStats,
   MachineInventory,
+  AgentOwnedSkill,
+  SkillAssignment,
 } from "./types";
 
 // ---------- 英文描述翻译（全局缓存，后端另有一份磁盘缓存） ----------
 
 /** 原文 → 译文 的内存缓存（响应式，译完卡片即刷新） */
-export const transMap = reactive<Record<string, string>>({});
-const inFlight = new Map<string, Promise<string>>();
+export const transMap = reactive<Record<string, string>>(Object.create(null));
+const inFlight = new Set<string>();
+const MAX_TRANSLATIONS = 256;
 
 /** 中文占比低于 30% 视为需要翻译 */
 export function needsTranslation(text: string): boolean {
@@ -28,44 +31,15 @@ export function ensureTranslate(text: string): string {
   if (!needsTranslation(text)) return text;
   if (transMap[text]) return transMap[text];
   if (!inFlight.has(text)) {
-    const p = api
-      .translateText(text)
-      .then((t) => {
-        if (t) transMap[text] = t;
-        return t;
-      })
-      .catch(() => "")
-      .finally(() => inFlight.delete(text));
-    inFlight.set(text, p);
+    inFlight.add(text);
+    void api.translateText(text).then((translation) => {
+      if (!translation) return;
+      const keys = Object.keys(transMap);
+      if (keys.length >= MAX_TRANSLATIONS) delete transMap[keys[0]];
+      transMap[text] = translation;
+    }).catch(() => {}).finally(() => inFlight.delete(text));
   }
   return text; // 译好前先显示原文
-}
-
-// ---- 批量翻译：限流队列，避免瞬时并发打爆免费翻译接口 ----
-
-const pendingQueue: string[] = [];
-let draining = false;
-
-async function drainQueue() {
-  if (draining) return;
-  draining = true;
-  while (pendingQueue.length) {
-    const t = pendingQueue.shift()!;
-    ensureTranslate(t);
-    // 免费接口限流：每条之间留点间隔
-    await new Promise((r) => setTimeout(r, 180));
-  }
-  draining = false;
-}
-
-/** 批量翻译（自动去重、跳过已译），逐条限流出队 */
-export function translateMany(texts: string[]) {
-  for (const t of texts) {
-    if (!needsTranslation(t)) continue;
-    if (transMap[t] || inFlight.has(t) || pendingQueue.includes(t)) continue;
-    pendingQueue.push(t);
-  }
-  drainQueue();
 }
 
 export interface ToastItem {
@@ -79,6 +53,9 @@ export const store = reactive({
   agents: [] as AgentStatus[],
   config: null as AppConfig | null,
   loading: false,
+  ownedSkills: [] as AgentOwnedSkill[],
+  assigning: false,
+  revision: 0,
   toasts: [] as ToastItem[],
 });
 
@@ -87,11 +64,17 @@ export const ui = reactive({
   /** 当前页：dashboard / skills / market / agents / audit / settings */
   page: "dashboard",
   settingsTab: "agents",
+  skillsView: "list" as "list" | "cards" | "agents",
 });
 
 export function openAgentSettings() {
   ui.settingsTab = "agents";
   ui.page = "settings";
+}
+
+export function openSkillAllocation() {
+  ui.skillsView = "agents";
+  ui.page = "skills";
 }
 
 export const discovery = reactive({
@@ -101,18 +84,24 @@ export const discovery = reactive({
 });
 
 let discoveryRequest: Promise<void> | null = null;
-export function discoverMachine(): Promise<void> {
+export function discoverMachine(refreshSkills = true): Promise<void> {
   if (discoveryRequest) return discoveryRequest;
-  discoveryRequest = runDiscovery().finally(() => { discoveryRequest = null; });
+  discoveryRequest = runDiscovery(refreshSkills).finally(() => { discoveryRequest = null; });
   return discoveryRequest;
 }
 
-async function runDiscovery(): Promise<void> {
+async function runDiscovery(refreshSkills: boolean): Promise<void> {
   discovery.loading = true;
   discovery.error = "";
   try {
     discovery.inventory = await api.refreshDiscovery();
-    await loadAll();
+    if (refreshSkills || !store.config) {
+      await loadAll();
+    } else {
+      const request = syncRequest;
+      const agents = await api.refreshStatus();
+      if (request === syncRequest) store.agents = agents;
+    }
   } catch (e) {
     discovery.error = String(e);
     toast(`本机发现失败：${e}`, "error");
@@ -179,15 +168,18 @@ export function removeToast(id: number) {
 }
 
 let syncRequest = 0;
-export async function loadAll(): Promise<void> {
+export async function loadAll(silent = false): Promise<void> {
   const request = ++syncRequest;
-  store.loading = true;
+  if (!silent) store.loading = true;
   try {
     const data = await api.getSyncData();
     if (request !== syncRequest) return;
     store.skills = data.skills;
     store.agents = data.agents;
     store.config = data.config;
+    const managed = new Set(data.agents.map(a => a.agent.id));
+    store.ownedSkills = (data.owned_skills || []).filter(s => managed.has(s.agent_id));
+    store.revision++;
   } catch (e) {
     toast(String(e), "error");
   } finally {
@@ -195,12 +187,34 @@ export async function loadAll(): Promise<void> {
   }
 }
 
-export function agentConfig(id: string) {
-  return store.config?.agent_configs[id];
-}
-
 export function isEnabled(agentId: string, skillKey: string): boolean {
   return store.config?.agent_configs[agentId]?.enabled_skills.includes(skillKey) ?? false;
+}
+
+export function isAssigned(agentId: string, skillKey: string): boolean {
+  return store.agents.find(a => a.agent.id === agentId)?.assigned_skills?.includes(skillKey) ?? false;
+}
+
+export function hasExternalSkill(agentId: string, skillKey: string): boolean {
+  return store.ownedSkills.some(s => s.agent_id === agentId && s.library_key === skillKey);
+}
+
+/** 所有即时开关复用同一个批次入口，后端只落盘指定技能。 */
+export async function assignSkills(changes: SkillAssignment[]): Promise<boolean> {
+  if (store.assigning || !changes.length) return false;
+  store.assigning = true;
+  ++syncRequest; // 丢弃写入前启动的后台读取。
+  try {
+    const result = await api.applySkillAssignments(changes);
+    toast(result.summary, "success");
+    return true;
+  } catch (e) {
+    toast(String(e), "error");
+    return false;
+  } finally {
+    await loadAll(true);
+    store.assigning = false;
+  }
 }
 
 export async function toggleSkill(agentId: string, skillKey: string, enabled: boolean) {

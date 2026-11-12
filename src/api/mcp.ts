@@ -1,6 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 
 export interface McpServer { name: string; config: Record<string, unknown>; check_timeout_sec?: number }
+export interface McpMarketSource { id: string; name: string; url: string; kind: 'registry' | 'json' }
+export const mcpMarketSources = () => invoke<McpMarketSource[]>('mcp_market_sources');
+export const mcpSaveMarketSources = (sources: McpMarketSource[]) => invoke<McpMarketSource[]>('mcp_save_market_sources',{sources});
 export interface McpBinding { agent_id: string; path: string; format: string }
 export interface McpSource {
   id: string; agent_id: string; agent_name: string; path: string; format: string;
@@ -9,7 +12,7 @@ export interface McpSource {
 export interface McpTarget {
   agent_id: string; name: string; installed: boolean; writable: boolean;
   binding: McpBinding | null; managed: string[]; can_restore: boolean;
-  /** MCP 只能在该工具自带界面内配置（如 Trae / 豆包），仅提供只读指引。 */
+  /** 尚无已验证文件适配的工具，仅支持在原工具中配置。 */
   app_managed: boolean;
   guide: McpGuide | null; blocked_reason: string;
   reload_notice: string;

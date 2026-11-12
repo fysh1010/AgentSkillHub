@@ -731,7 +731,7 @@ fn collect_sources(
     for hit in known_agents::detect_sources(bases) {
         add_source(&mut out, hit.agent.name, "系统技能（只读）", &hit.path);
     }
-    add_source(&mut out, "OpenAI Codex", "通用用户技能（官方目录）", &bases.home.join(".agents/skills"));
+    add_source(&mut out, "Agents 通用共享目录", "通用共享技能", &bases.home.join(".agents/skills"));
     // 环境变量只覆盖该产品的显式目录，绝不扩展扫描范围。
     for (id, name) in [("codex", "Codex 系统技能"), ("workbuddy", "WorkBuddy 系统技能")] {
         if let Some(root) = override_home(id, env) {

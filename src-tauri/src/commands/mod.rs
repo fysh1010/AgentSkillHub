@@ -1,4 +1,6 @@
 pub mod cache;
+pub mod assignments;
+pub mod skill_links;
 pub mod agent_policy;
 pub mod delete;
 pub mod deploy;
@@ -27,6 +29,9 @@ pub struct AppState {
     pub inventory: Mutex<Option<MachineInventory>>,
 }
 
+// 分配/部署共用锁；不把配置锁持有到文件系统操作期间。
+static SKILL_IO: Mutex<()> = Mutex::new(());
+
 /// 用户主目录（Windows 下 %USERPROFILE%，其他平台回退 $HOME）
 fn env_dir(name: &str) -> Option<PathBuf> {
     std::env::var_os(name).map(PathBuf::from).filter(|p| p.is_absolute())
@@ -47,7 +52,7 @@ fn agent_bases() -> Option<known_agents::Bases> {
 
 /// 内置 Agent 默认注册表（路径可在设置中修改）
 /// 取 known_agents 已知清单里的常用产品，按当前用户目录推导；
-/// 拿不到主目录时返回空表，由 detect_agents 兜底发现。
+/// 首次启动返回空表，已安装工具由 refresh_discovery 只读发现。
 fn default_agents() -> Vec<AgentDef> {
     // 首次启动不虚构已安装工具；扫描只读，登记由用户开启配置时完成。
     Vec::new()
@@ -193,8 +198,17 @@ fn pretty_agent_name(id: &str) -> String {
 pub async fn get_sync_data(state: State<'_, AppState>) -> Result<SyncResult, String> {
     let cfg = state.config.lock().unwrap().clone();
     let active = agent_policy::active_config(&cfg, state.inventory.lock().unwrap().as_ref());
+    let mut readable = cfg.clone();
+    if let Some(inventory) = state.inventory.lock().unwrap().as_ref() {
+        for agent in inventory.agents.iter().filter(|a| !a.shared && a.dir_exists) {
+            if !readable.agents.iter().any(|a| a.id == agent.id) {
+                readable.agents.push(AgentDef { id:agent.id.clone(), name:agent.name.clone(), skills_dir:agent.skills_dir.clone(), builtin:agent.known });
+            }
+        }
+    }
     tauri::async_runtime::spawn_blocking(move || {
         let skills = scan::scan_skills(&cfg.skills_root);
+        let owned_skills = assignments::owned_skills(&readable, &skills);
         let agents = active
             .agents
             .iter()
@@ -203,25 +217,170 @@ pub async fn get_sync_data(state: State<'_, AppState>) -> Result<SyncResult, Str
         SyncResult {
             skills,
             agents,
-            config: cfg.clone(),
+            config: cfg,
+            owned_skills,
         }
     })
     .await
     .map_err(|e| format!("扫描任务异常: {e}"))
 }
 
-/// 重新扫描技能库
+/// 仅读取明确的工作目录与 MCP 配置的元数据；前端据此合并外部变更，不自动部署。
 #[tauri::command]
-pub async fn scan_skills_cmd(state: State<'_, AppState>) -> Result<Vec<SkillInfo>, String> {
-    let root = state.config.lock().unwrap().skills_root.clone();
-    tauri::async_runtime::spawn_blocking(move || scan::scan_skills(&root))
-        .await
-        .map_err(|e| format!("扫描任务异常: {e}"))
+pub async fn workspace_stamp(state: State<'_, AppState>) -> Result<String, String> {
+    let cfg = state.config.lock().unwrap().clone();
+    let mut paths = vec![PathBuf::from(&cfg.skills_root)];
+    if let Ok(dir) = state.handle.path().app_config_dir() { paths.push(dir.join("config.json")); }
+    paths.extend(cfg.agents.iter().map(|a| PathBuf::from(&a.skills_dir)));
+    paths.extend(cfg.builtin_sources.iter().map(|s| PathBuf::from(&s.skills_dir)));
+    if let Some(inventory) = state.inventory.lock().unwrap().as_ref() {
+        paths.extend(inventory.agents.iter().map(|a| PathBuf::from(&a.skills_dir)));
+        paths.extend(inventory.sources.iter().map(|s| PathBuf::from(&s.skills_dir)));
+    }
+    if let Some(bases) = agent_bases() {
+        paths.extend(known_agents::KNOWN_AGENTS.iter().filter_map(|a| discovery::skill_path(&bases, a.id)));
+    }
+    paths.extend(mcp::watch_paths(&state)?);
+    tauri::async_runtime::spawn_blocking(move || {
+        use std::hash::{Hash, Hasher};
+        paths.sort(); paths.dedup();
+        let mut hash = std::collections::hash_map::DefaultHasher::new();
+        for path in paths {
+            path.hash(&mut hash);
+            scan::dir_fingerprint(&path).hash(&mut hash);
+            // 技能本身可能是另一个工具创建的链接，观察其内容而非只观察链接元数据。
+            if path.is_dir() {
+                let mut skills = Vec::new();
+                scan::visit_skills(&path.to_string_lossy(), |p,_,_,_| skills.push(p));
+                skills.sort();
+                for skill in skills { skill.hash(&mut hash); scan::dir_fingerprint(&skill).hash(&mut hash); }
+            }
+        }
+        format!("{:x}", hash.finish())
+    }).await.map_err(|e| format!("读取目录变更失败：{e}"))
+}
+
+#[tauri::command]
+pub async fn apply_skill_assignments(app: AppHandle, changes: Vec<SkillAssignment>, dry_run: bool) -> Result<DeployResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let _io = SKILL_IO.lock().unwrap();
+        let state = app.state::<AppState>();
+        let before = state.config.lock().unwrap().clone();
+        for change in &changes { configurable_agent(&before, &state, &change.agent_id)?; }
+        let actions = if dry_run { assignments::preview(&before, &changes)? } else { assignments::apply(&before, &changes)? };
+        if !dry_run {
+            {
+                let mut cfg = state.config.lock().unwrap();
+                assignments::update_config(&mut cfg, &changes);
+                let ids: std::collections::HashSet<_> = changes.iter().map(|c| &c.agent_id).collect();
+                for id in ids {
+                    let agent = before.agents.iter().find(|a| &a.id == id).unwrap();
+                    let agent_actions: Vec<_> = actions.iter().filter(|a| std::path::Path::new(&a.link_path).parent() == Some(std::path::Path::new(&agent.skills_dir))).cloned().collect();
+                    if !agent_actions.is_empty() {
+                        push_audit(&mut cfg, AuditEntry { id:format!("{}-assign-{id}", now_ts()), ts:now_ts(), action:"deploy".into(), agent_id:id.clone(), detail:format!("即时技能分配：{} 项", agent_actions.len()), actions:agent_actions });
+                    }
+                }
+            }
+            if let Err(error) = save_config(&state) {
+                let rollback = assignments::undo(&actions);
+                let mut cfg = state.config.lock().unwrap();
+                let restore: Vec<_> = changes.iter().map(|c| SkillAssignment { enabled:before.agent_configs.get(&c.agent_id).is_some_and(|a| a.enabled_skills.contains(&c.skill_key)), ..c.clone() }).collect();
+                assignments::update_config(&mut cfg, &restore);
+                cfg.audit = before.audit;
+                return Err(format!("保存配置失败：{error}；{}", rollback.err().unwrap_or_else(|| "已撤销链接变更".into())));
+            }
+        }
+        Ok(DeployResult { ok:true, summary:format!("{} {} 项技能链接变更", if dry_run { "预览：" } else { "已应用" }, actions.len()), actions })
+    }).await.map_err(|e| format!("技能分配任务异常：{e}"))?
+}
+
+/// 从明确的 Agent 用户目录导入副本，不移动来源、不改变原 Agent 的安装方式。
+#[tauri::command]
+pub async fn preview_skill_link(app: AppHandle, agent_id: String, skill_key: String, source_key: Option<String>) -> Result<skill_links::Preview, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let _io = SKILL_IO.lock().unwrap();
+        let state = app.state::<AppState>();
+        let cfg = state.config.lock().unwrap().clone();
+        configurable_agent(&cfg, &state, &agent_id)?;
+        skill_links::preview_source(&cfg, &agent_id, &skill_key, source_key.as_deref())
+    }).await.map_err(|e|e.to_string())?
+}
+
+#[tauri::command]
+pub async fn convert_skill_link(app: AppHandle, agent_id: String, skill_key: String, fingerprint: String, source_key: Option<String>) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let _io = SKILL_IO.lock().unwrap();
+        let state = app.state::<AppState>();
+        let before = state.config.lock().unwrap().clone();
+        configurable_agent(&before, &state, &agent_id)?;
+        let receipt = skill_links::apply_source(&before, &agent_id, &skill_key, &fingerprint, source_key.as_deref())?;
+        {
+            let mut cfg = state.config.lock().unwrap();
+            cfg.skill_link_backups.push(receipt.clone());
+            assignments::update_config(&mut cfg, &[SkillAssignment {agent_id:agent_id.clone(),skill_key:skill_key.clone(),enabled:true}]);
+            push_audit(&mut cfg, AuditEntry {id:receipt.id.clone(),ts:now_ts(),action:"skill_link".into(),agent_id:agent_id.clone(),detail:format!("{skill_key}：原目录保留在 {}，已改为库链接",receipt.backup_path),actions:vec![]});
+        }
+        if let Err(error) = save_config(&state) {
+            let restore = skill_links::restore(&before, &receipt);
+            let mut cfg = state.config.lock().unwrap();
+            cfg.skill_link_backups = before.skill_link_backups;
+            cfg.agent_configs = before.agent_configs;
+            cfg.audit = before.audit;
+            return Err(format!("保存配置失败：{error}；{}",restore.err().unwrap_or_else(||"已恢复原目录".into())));
+        }
+        Ok(format!("已启用技能库链接，原目录备份：{}",receipt.backup_path))
+    }).await.map_err(|e|e.to_string())?
+}
+
+#[tauri::command]
+pub async fn restore_skill_link(app: AppHandle, backup_id: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let _io = SKILL_IO.lock().unwrap();
+        let state = app.state::<AppState>();
+        let before = state.config.lock().unwrap().clone();
+        let receipt = before.skill_link_backups.iter().find(|b|b.id == backup_id).ok_or("备份记录不存在")?;
+        configurable_agent(&before, &state, &receipt.agent_id)?;
+        let had_link = std::fs::symlink_metadata(if receipt.link_path.is_empty() {&receipt.original_path} else {&receipt.link_path}).is_ok();
+        skill_links::restore(&before, receipt)?;
+        {
+            let mut cfg = state.config.lock().unwrap();
+            cfg.skill_link_backups.retain(|b|b.id != backup_id);
+            assignments::update_config(&mut cfg, &[SkillAssignment {agent_id:receipt.agent_id.clone(),skill_key:receipt.skill_key.clone(),enabled:false}]);
+            push_audit(&mut cfg, AuditEntry {id:format!("{}-restore",now_ts()),ts:now_ts(),action:"skill_link".into(),agent_id:receipt.agent_id.clone(),detail:format!("{}：已恢复原实体目录",receipt.skill_key),actions:vec![]});
+        }
+        if let Err(error) = save_config(&state) {
+            let undo = skill_links::undo_restore(receipt, had_link);
+            let mut cfg = state.config.lock().unwrap();
+            cfg.skill_link_backups = before.skill_link_backups;
+            cfg.agent_configs = before.agent_configs;
+            cfg.audit = before.audit;
+            return Err(format!("保存配置失败：{error}；{}",undo.err().unwrap_or_else(||"已撤销恢复".into())));
+        }
+        Ok("已恢复原实体技能目录".into())
+    }).await.map_err(|e|e.to_string())?
+}
+
+#[tauri::command]
+pub async fn adopt_agent_skill(state: State<'_, AppState>, agent_id: String, skill_key: String) -> Result<String, String> {
+    let mut cfg = state.config.lock().unwrap().clone();
+    if !cfg.agents.iter().any(|a| a.id == agent_id) {
+        let inv = state.inventory.lock().unwrap();
+        let a = inv.as_ref().and_then(|i| i.agents.iter().find(|a| a.id == agent_id && !a.shared)).ok_or("未找到 Agent 用户目录")?;
+        cfg.agents.push(AgentDef { id:a.id.clone(), name:a.name.clone(), skills_dir:a.skills_dir.clone(), builtin:a.known });
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let _io = SKILL_IO.lock().unwrap();
+        let a = cfg.agents.iter().find(|a| a.id == agent_id).ok_or("Agent 不存在")?;
+        let skill = scan::scan_skills(&a.skills_dir).into_iter().find(|s| s.key == skill_key).ok_or("技能已被外部移除，请刷新")?;
+        let src = std::path::Path::new(&skill.path);
+        market::adopt(&src.parent().ok_or("技能来源无父目录")?.to_string_lossy(), &src.file_name().ok_or("技能名为空")?.to_string_lossy(), &cfg.skills_root)
+    }).await.map_err(|e| format!("导入技能失败：{e}"))?
 }
 
 /// 修改技能库根目录（可配置）
 #[tauri::command]
 pub fn set_skills_root(state: State<AppState>, root: String) -> Result<AppConfig, String> {
+    let _io = SKILL_IO.lock().unwrap();
     {
         let mut cfg = state.config.lock().unwrap();
         cfg.skills_root = root;
@@ -238,6 +397,7 @@ pub fn toggle_skill(
     skill_key: String,
     enabled: bool,
 ) -> Result<AppConfig, String> {
+    let _io = SKILL_IO.lock().unwrap();
     {
         let mut cfg = state.config.lock().unwrap();
         configurable_agent(&cfg, &state, &agent_id)?;
@@ -269,6 +429,7 @@ pub fn deploy_cmd(
     agent_id: String,
     dry_run: bool,
 ) -> Result<DeployResult, String> {
+    let _io = SKILL_IO.lock().unwrap();
     let mut result = {
         let cfg = state.config.lock().unwrap();
         let agent = configurable_agent(&cfg, &state, &agent_id)?;
@@ -307,6 +468,7 @@ pub fn deploy_cmd(
 /// 回滚某 Agent 最近一次部署
 #[tauri::command]
 pub fn rollback_cmd(state: State<AppState>, agent_id: String) -> Result<DeployResult, String> {
+    let _io = SKILL_IO.lock().unwrap();
     let result = {
         let cfg = state.config.lock().unwrap();
         configurable_agent(&cfg, &state, &agent_id)?;
@@ -337,6 +499,7 @@ pub fn rollback_cmd(state: State<AppState>, agent_id: String) -> Result<DeployRe
 /// 从技能库删除技能（移入 Windows 回收站，并清理关联的 Agent 链接与配置）
 #[tauri::command]
 pub fn delete_skill(state: State<AppState>, key: String) -> Result<DeleteResult, String> {
+    let _io = SKILL_IO.lock().unwrap();
     let result = {
         let mut cfg = state.config.lock().unwrap();
         let allowed = agent_policy::active_config(&cfg,state.inventory.lock().unwrap().as_ref()).agents.into_iter().map(|a| a.id).collect();
@@ -387,23 +550,16 @@ pub fn clear_audit(state: State<AppState>) -> Result<(), String> {
 
 /// 刷新所有 Agent 状态
 #[tauri::command]
-pub fn refresh_status(state: State<AppState>) -> Vec<AgentStatus> {
-    let cfg = state.config.lock().unwrap();
-    agent_policy::active_config(&cfg, state.inventory.lock().unwrap().as_ref()).agents
-        .iter()
-        .map(|a| deploy::agent_status(a, &cfg))
-        .collect()
-}
-
-/// 兼容旧界面的未接入目录查询，复用本机发现规则。
-#[tauri::command]
-pub async fn detect_agents(state: State<'_, AppState>) -> Result<Vec<DetectedAgent>, String> {
-    let registered = state.config.lock().unwrap().agents.clone();
-    let bases = agent_bases().ok_or("无法定位当前用户目录")?;
-    tauri::async_runtime::spawn_blocking(move || discovery::inventory(&bases, &registered).agents
-        .into_iter().filter(|a| !a.registered)
-        .map(|a| DetectedAgent { id: a.id, name: a.name, skills_dir: a.skills_dir, group: String::new() }).collect())
-        .await.map_err(|e| format!("发现 Agent 失败：{e}"))
+pub async fn refresh_status(state: State<'_, AppState>) -> Result<Vec<AgentStatus>, String> {
+    let cfg = {
+        let full = state.config.lock().unwrap();
+        agent_policy::active_config(&full, state.inventory.lock().unwrap().as_ref())
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        cfg.agents.iter().map(|a| deploy::agent_status(a, &cfg)).collect()
+    })
+    .await
+    .map_err(|e| format!("刷新 Agent 状态失败：{e}"))
 }
 
 /// 只读扫描，绝不自动登记或重新开启用户关闭的 Agent。
@@ -427,6 +583,7 @@ pub async fn refresh_discovery(state: State<'_, AppState>) -> Result<MachineInve
 
 #[tauri::command]
 pub fn set_agent_management(state: State<AppState>, agent_id: String, enabled: bool) -> Result<AppConfig, String> {
+    let _io = SKILL_IO.lock().unwrap();
     {
         let mut cfg = state.config.lock().unwrap();
         let mut inventory = state.inventory.lock().unwrap();
@@ -440,6 +597,7 @@ pub fn set_agent_management(state: State<AppState>, agent_id: String, enabled: b
 /// 自定义确认是明确的用户操作；有效程序文件或已存在技能目录至少提供一项。
 #[tauri::command]
 pub fn save_custom_agent(state: State<AppState>, agent: AgentDef, executable_path: String, enabled: bool) -> Result<AppConfig, String> {
+    let _io = SKILL_IO.lock().unwrap();
     if agent.id.is_empty() || !agent.id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
         return Err("ID 只能包含字母、数字、连字符和下划线".into());
     }
@@ -476,6 +634,7 @@ pub fn import_existing_links(
     state: State<AppState>,
     agent_id: String,
 ) -> Result<AppConfig, String> {
+    let _io = SKILL_IO.lock().unwrap();
     {
         let mut cfg = state.config.lock().unwrap();
         let agent = configurable_agent(&cfg, &state, &agent_id)?;
@@ -851,28 +1010,6 @@ pub async fn ensure_skill_icon(
         .map_err(|e| format!("图标任务异常: {e}"))?
 }
 
-// ================= 外部技能（实体目录）=================
-
-/// 列出某 Agent skills 目录中的实体技能（非链接）
-#[tauri::command]
-pub fn list_external_skills(state: State<AppState>, agent_id: String) -> Result<Vec<ExternalSkill>, String> {
-    let cfg = state.config.lock().unwrap();
-    let agent = configurable_agent(&cfg, &state, &agent_id)?;
-    Ok(market::list_external(&agent.skills_dir))
-}
-
-/// 收编外部技能：复制进技能库根目录
-#[tauri::command]
-pub fn adopt_skill(
-    state: State<AppState>,
-    agent_id: String,
-    dir_name: String,
-) -> Result<String, String> {
-    let cfg = state.config.lock().unwrap();
-    let agent = configurable_agent(&cfg, &state, &agent_id)?;
-    market::adopt(&agent.skills_dir, &dir_name, &cfg.skills_root)
-}
-
 // ================= 工具内置技能来源（插件缓存 / IDE 内置技能包）=================
 
 /// 这些目录由对应工具自己写入与升级，本工具只读浏览、按需收编副本，绝不往里做链接部署。
@@ -884,22 +1021,6 @@ fn builtin_source(source_id: &str, configs: &[CustomBuiltinSource]) -> Result<Bu
     let bases = agent_bases().ok_or("无法定位用户主目录")?;
     discovery::source_by_id(&bases, source_id)
         .ok_or_else(|| format!("内置技能来源不存在或已被清理: {source_id}"))
-}
-
-/// 本机检测到的内置技能来源
-#[tauri::command]
-pub async fn detect_builtin_sources(state: State<'_, AppState>) -> Result<Vec<DetectedAgent>, String> {
-    let configs = state.config.lock().unwrap().builtin_sources.clone();
-    let Some(bases) = agent_bases() else {
-        return Ok(Vec::new());
-    };
-    tauri::async_runtime::spawn_blocking(move || {
-        let mut result = discovery::inventory(&bases, &[]);
-        discovery::append_custom_sources(&mut result, &configs);
-        result.sources.into_iter()
-            .map(|s| DetectedAgent { id: s.id, name: s.name, skills_dir: s.skills_dir, group: s.group }).collect()
-    })
-        .await.map_err(|e| format!("内置技能发现失败：{e}"))
 }
 
 /// 某来源里的技能清单（只读）

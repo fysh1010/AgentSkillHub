@@ -25,8 +25,23 @@ pub fn create_junction(link: &Path, target: &Path) -> Result<(), String> {
     if link.exists() || is_junction(link) {
         return Err(format!("目标路径已存在: {}", link.display()));
     }
-    let out = crate::commands::hidden_command("cmd")
-        .args(["/c", "mklink", "/J", &link.to_string_lossy(), &target.to_string_lossy()])
+    let mut command = crate::commands::hidden_command("cmd");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let link = link.to_string_lossy().replace('/', "\\");
+        let target = target.to_string_lossy().replace('/', "\\");
+        if [&link, &target].iter().any(|s| s.contains(['"', '\r', '\n'])) {
+            return Err("链接路径含非法字符".into());
+        }
+        // cmd 不按普通程序的 argv 规则解析；路径通过环境传入并始终加引号。
+        // 关闭延迟展开，保留空格、&、%、! 等合法路径字符。
+        command.env("ASH_JUNCTION_LINK", link).env("ASH_JUNCTION_TARGET", target)
+            .raw_arg("/D /V:OFF /C mklink /J \"%ASH_JUNCTION_LINK%\" \"%ASH_JUNCTION_TARGET%\"");
+    }
+    #[cfg(not(windows))]
+    command.args(["/c", "mklink", "/J", &link.to_string_lossy(), &target.to_string_lossy()]);
+    let out = command
         .output()
         .map_err(|e| format!("调用 mklink 失败: {e}"))?;
     if out.status.success() {
@@ -89,7 +104,29 @@ pub(crate) fn within_root(root: &str, p: &Path) -> bool {
 
 pub(crate) fn normalize(p: &Path) -> PathBuf {
     let s = p.to_string_lossy().replace('/', "\\");
-    PathBuf::from(s.trim_end_matches('\\'))
+    let s = s.trim_start_matches(r"\\?\").trim_end_matches('\\');
+    PathBuf::from(if cfg!(windows) { s.to_lowercase() } else { s.to_string() })
+}
+
+pub(crate) fn same_target(a: &Path, b: &Path) -> bool {
+    normalize(&fs::canonicalize(a).unwrap_or_else(|_| a.to_path_buf()))
+        == normalize(&fs::canonicalize(b).unwrap_or_else(|_| b.to_path_buf()))
+}
+
+pub(crate) fn assigned_skills(agent: &AgentDef, root: &str) -> Vec<String> {
+    let dir = Path::new(&agent.skills_dir);
+    let mut assigned = Vec::new();
+    super::scan::visit_skills(root, |target, name, _, key| {
+        let link = dir.join(name);
+        if link.join("SKILL.md").is_file()
+            && (is_junction(&link) || is_junction(dir) || same_target(dir, Path::new(root)))
+            && same_target(&link, &target)
+        {
+            assigned.push(key);
+        }
+    });
+    assigned.sort();
+    assigned
 }
 
 /// 计算期望状态 vs 实际状态的差异
@@ -402,7 +439,7 @@ pub fn rollback_last(cfg: &AppConfig, agent_id: &str) -> DeployResult {
         match a.kind.as_str() {
             "create_link" => {
                 let link = Path::new(&a.link_path);
-                if a.ok && is_junction(link) {
+                if a.ok && is_junction(link) && junction_target(link).is_some_and(|t| same_target(&t, Path::new(&a.target))) {
                     match remove_junction(link) {
                         Ok(()) => actions.push(DeployAction {
                             kind: "remove_link".into(),
@@ -424,6 +461,13 @@ pub fn rollback_last(cfg: &AppConfig, agent_id: &str) -> DeployResult {
                             });
                         }
                     }
+                } else if a.ok && fs::symlink_metadata(link).is_ok() {
+                    errs += 1;
+                    actions.push(DeployAction {
+                        ok: false,
+                        message: "链接已被外部修改，拒绝回滚".into(),
+                        ..a.clone()
+                    });
                 }
             }
             "remove_link" => {
@@ -536,6 +580,7 @@ pub fn agent_status(agent: &AgentDef, cfg: &AppConfig) -> AgentStatus {
         external_count,
         drift,
         message,
+        assigned_skills: assigned_skills(agent, &cfg.skills_root),
     }
 }
 
@@ -630,6 +675,7 @@ mod tests {
         create_junction(&agent_dir, &root.join("common")).unwrap();
 
         let cfg = AppConfig {
+            skill_link_backups: Vec::new(),
             skills_root: root.to_string_lossy().to_string(),
             agents: Vec::new(),
             agent_configs: HashMap::from([(
@@ -689,6 +735,7 @@ mod tests {
             builtin: true,
         };
         let cfg = AppConfig {
+            skill_link_backups: Vec::new(),
             skills_root: root.to_string_lossy().to_string(),
             agents: Vec::new(),
             agent_configs: HashMap::from([(
@@ -741,6 +788,7 @@ mod tests {
 
         // 构造一条包含 remove_link 的审计（目标仍存在）
         let cfg = AppConfig {
+            skill_link_backups: Vec::new(),
             skills_root: root.to_string_lossy().to_string(),
             agents: Vec::new(),
             agent_configs: HashMap::new(),
@@ -784,6 +832,7 @@ mod tests {
         create_junction(&agent_dir, &root.join("common")).unwrap();
 
         let cfg = AppConfig {
+            skill_link_backups: Vec::new(),
             skills_root: root.to_string_lossy().to_string(),
             agents: Vec::new(),
             agent_configs: HashMap::new(),
@@ -819,6 +868,7 @@ mod tests {
         create_junction(&agent_dir.join("code"), &root.join("开发").join("code")).unwrap();
 
         let cfg = AppConfig {
+            skill_link_backups: Vec::new(),
             skills_root: root.to_string_lossy().to_string(),
             agents: Vec::new(),
             agent_configs: HashMap::new(),

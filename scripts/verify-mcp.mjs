@@ -10,7 +10,9 @@ import { spawn } from "node:child_process";
 import { setTimeout as pause } from "node:timers/promises";
 
 const maintenanceOnly = process.argv.includes("--maintenance-only");
-const args = process.argv.slice(2).filter(arg => !["--build", "--maintenance-only"].includes(arg));
+// --offline 只跳过外部 Registry 搜索；部署、暂停、恢复及本地握手仍走真实后端。
+const offline = process.argv.includes("--offline");
+const args = process.argv.slice(2).filter(arg => !["--build", "--maintenance-only", "--offline"].includes(arg));
 const exe = path.resolve(args[0] || "src-tauri/target/debug/agentskillhub.exe");
 const output = path.resolve(args[1] || path.join(tmpdir(), "agentskillhub-mcp-ui.png"));
 const root = await mkdtemp(path.join(tmpdir(), "agentskillhub-mcp-test-"));
@@ -117,7 +119,7 @@ try {
   assert(!await dom(()=>!!document.querySelector('.source-block')),"默认页面不能显示内置来源列表");
   assert(!await dom(names=>[...document.querySelectorAll('.service-row h3')].some(h=>names.includes(h.childNodes[0]?.textContent.trim())),builtinNames),"内置服务不能混入我的 MCP");
   assert.equal(await readFile(configFile,"utf8"),original);
-  checks.push("默认仅展示用户服务，内置来源隔离，逐项配置指南");
+  checks.push("默认仅展示已开启工具的用户服务，内置来源隔离");
 
   await click("按 Agent");await clickAgent("MCP 验证工具");
   await click("暂停 external");await waitText("暂停此 Agent 中的服务");
@@ -139,7 +141,6 @@ try {
   assert.equal(await readFile(configFile,"utf8"),baseline);
   await applyChanges();await waitText("本地进程 · fixture-edited-command");
   assert((await readFile(configFile,"utf8")).includes("value with spaces"));
-  await dom(()=>document.querySelector('.config-details').open=true);
   await click("恢复上次修改");await click("确认");
   await waitText("本地进程 · do-not-run");
   assert.equal(await readFile(configFile,"utf8"),baseline);
@@ -204,11 +205,9 @@ try {
   assert(!await dom(()=>document.body.innerText.includes('Bearer fixture-token')),"主列表不应显示凭证");
   checks.push("完整 mcpServers JSON 批量导入和默认凭证隐藏");
 
-  await click("发现与导入");await waitText("发现本机配置");
+  assert(!await dom(()=>[...document.querySelectorAll('.workspace-tabs button')].some(b=>b.textContent.includes('发现与导入'))),"重复的发现与导入应移除");
   assert(!await dom(()=>!!document.querySelector('.discovery-switch')), "不应保留插件深扫入口");
-  await waitText("不深搜插件与缓存");
-  await click("配置指南");await waitText("核查 2026-10-25");
-  assert(await dom(()=>document.querySelectorAll('.guide-grid article').length>=64));
+  assert(!await dom(()=>[...document.querySelectorAll('.workspace-tabs button')].some(b=>b.textContent.includes('配置指南'))));
   await click("我的 MCP");
   await evaluate("document.querySelectorAll('.toast-close').forEach(b=>b.click())");
   await pause(150);
@@ -225,8 +224,9 @@ try {
   await click("关闭编辑器");
   await dom(()=>{const s=document.querySelector('select[aria-label="界面配色"]');s.value="monochrome";s.dispatchEvent(new Event("change",{bubbles:true}));});
   await cdp("Emulation.clearDeviceMetricsOverride");
-  checks.push("明确用户配置发现、无插件深扫入口、配置指南与主界面视觉检查");
+  checks.push("明确用户配置发现、无插件深扫入口、配置设置集中管理与主界面视觉检查");
 
+  if (!offline) {
   const registry=await invoke("mcp_market_search",{query:"filesystem",cursor:null});
   assert(registry.servers.length,"官方市场应返回真实搜索结果");
   await click("MCP 市场");await waitText("配置安装 →");
@@ -238,10 +238,20 @@ try {
   await dom(()=>{const row=[...document.querySelectorAll(".mcp-editor .agent-chip")].find(r=>r.textContent.includes("MCP 验证工具 · 二"));row.click();});
   await click("保存");await applyChanges();
 
+  checks.push("真实市场搜索、必填校验、参数表单与安装到指定 Agent");
+  } else {
+    // 使用公开安装命令的本地夹具，不执行 npx，不将联网结果冒充验证通过。
+    await invoke('mcp_save_server',{server:{name:'fixture-market',config:{command:'npx',args:['-y','fixture-mcp@1.0.0'],env:{WORKSPACE_ROOT:root}}}});
+    const beforeMarket=await invoke('mcp_inventory');
+    const target=beforeMarket.targets.find(t=>t.agent_id==='mcp-fixture-two');
+    const plan=await invoke('mcp_preview',{agentId:target.agent_id,names:[...target.managed,'fixture-market']});
+    await invoke('mcp_apply',{ticket:plan.ticket});
+    checks.push('离线夹具部署到指定 Agent（跳过外部市场联网搜索）');
+  }
+
   second=JSON.parse((await readFile(secondFile,"utf8")).replace("// fixture comment",""));
   assert.equal(second.mcp["fixture-market"].command[0],"npx");
   assert.equal(second.mcp["fixture-market"].environment.WORKSPACE_ROOT,root);
-  checks.push("真实市场搜索、必填校验、参数表单与安装到指定 Agent");
 
   // 暂停后从库中移除定义，再恢复为原 Agent 的独立用户服务，不能留下失效的库引用。
   inv=await invoke("mcp_inventory");

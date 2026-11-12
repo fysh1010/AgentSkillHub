@@ -54,14 +54,6 @@ export interface AgentDef {
   builtin: boolean;
 }
 
-export interface DetectedAgent {
-  id: string;
-  name: string;
-  skills_dir: string;
-  /** 内置技能来源用：所属产品（同一产品的多处实例归一组）；普通 Agent 为空 */
-  group?: string;
-}
-
 export interface MachineAgent {
   id: string;
   name: string;
@@ -176,6 +168,7 @@ export interface ExternalSkill {
 }
 
 export interface AgentStatus {
+  assigned_skills: string[];
   agent: AgentDef;
   dir_ok: boolean;
   is_parent_link: boolean;
@@ -217,7 +210,10 @@ export interface AgentConfig {
   enabled_skills: string[];
 }
 
+export interface SkillLinkBackup { id: string; agent_id: string; skill_key: string; original_path: string; link_path: string; backup_path: string; target: string; fingerprint: string }
+export interface SkillLinkPreview { agent_id: string; skill_key: string; source_key: string; original_path: string; link_path: string; target: string; fingerprint: string }
 export interface AppConfig {
+  skill_link_backups?: SkillLinkBackup[];
   builtin_sources?: CustomBuiltinSource[];
   skills_root: string;
   agents: AgentDef[];
@@ -235,6 +231,21 @@ export interface SyncResult {
   skills: SkillInfo[];
   agents: AgentStatus[];
   config: AppConfig;
+  owned_skills: AgentOwnedSkill[];
+}
+
+export interface SkillAssignment {
+  agent_id: string;
+  skill_key: string;
+  enabled: boolean;
+}
+
+export interface AgentOwnedSkill {
+  agent_id: string;
+  agent_name: string;
+  skill: SkillInfo;
+  linked: boolean;
+  library_key: string | null;
 }
 
 export interface DeployResult {

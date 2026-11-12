@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from "vue";
-import { discovery, discoverMachine, loadAll, store, toast, ui } from "../store";
+import { computed, onMounted, reactive, ref, watch } from "vue";
+import { discovery, discoverMachine, loadAll, openSkillAllocation, store, toast } from "../store";
 import { revealPath, saveCustomAgent, setAgentManagement } from "../api/tauri";
 import { useEsc } from "../composables/useEsc";
 import type { MachineAgent } from "../types";
 import { mcpInventory, mcpSaveBinding, mcpFormats, type McpTarget } from "../api/mcp";
+import AgentIcon from "./AgentIcon.vue";
 
 const list = ref<"installed" | "uninstalled">("installed");
 const keyword = ref("");
@@ -15,18 +16,29 @@ const saving = ref(false);
 const form = reactive({ id:"", name:"", skills_dir:"", executable_path:"", enabled:true, mcp_path:"", mcp_format:"json" });
 const mcpTargets = ref<McpTarget[]>([]);
 const bindingLoading = ref(false);
+const bindingError = ref("");
+let bindingRequest = 0;
+async function refreshBindings() {
+  const request = ++bindingRequest;
+  try { const data = await mcpInventory(); if (request === bindingRequest) { mcpTargets.value = data.targets; bindingError.value = ""; } }
+  catch(e) { if (request === bindingRequest) bindingError.value = String(e); }
+}
+function mcpTarget(id: string) { return mcpTargets.value.find(t => t.agent_id === id); }
+watch(() => store.revision, () => { if (!editing.value && !saving.value && !busy.value) void refreshBindings(); });
 useEsc(() => { if (!saving.value) editing.value = false; });
 
 const candidates = computed(() => (discovery.inventory?.agents || []).filter(a => !a.shared));
 const installed = computed(() => candidates.value.filter(a => a.installed));
 const uninstalled = computed(() => candidates.value.filter(a => !a.installed));
 const configured = computed(() => installed.value.filter(a => a.management_enabled).length);
+// 历史内置来源配置保留，其校验提示不属于当前的工具接入范围。
+const warnings = computed(() => (discovery.inventory?.warnings || []).filter(w => !w.startsWith("手动来源「")));
 const visible = computed(() => (list.value === "installed" ? installed.value : uninstalled.value).filter(a =>
   `${a.name} ${a.id} ${a.skills_dir}`.toLowerCase().includes(keyword.value.trim().toLowerCase())));
 
 onMounted(() => {
   if (!discovery.inventory || Date.now()/1000 - discovery.inventory.scanned_at > 15) void discoverMachine();
-  void mcpInventory().then(data => mcpTargets.value = data.targets).catch(e => toast(String(e), "error"));
+  void refreshBindings();
 });
 
 async function toggle(agent: MachineAgent, value: boolean) {
@@ -37,6 +49,7 @@ async function toggle(agent: MachineAgent, value: boolean) {
     const updated = discovery.inventory?.agents.find(a => a.id === agent.id);
     if (updated) { updated.management_enabled = value; updated.registered ||= value; }
     await loadAll();
+    await refreshBindings();
     toast(value ? `已允许配置 ${agent.name}` : `已关闭 ${agent.name} 的配置，原技能分配与链接保留`, "success");
   } catch (e) { toast(String(e),"error"); }
   finally { busy.value = ""; }
@@ -86,7 +99,7 @@ async function save() {
 }
 
 function openPath(path: string) { revealPath(path).catch(e => toast(String(e),"error")); }
-function configure() { ui.page = "agents"; }
+function configure() { openSkillAllocation(); }
 function evidenceLabel(agent: MachineAgent) {
   if (agent.custom) return "手动确认";
   return agent.evidence.filter(e => ["PATH 命令","安装登记","运行进程","IDE 扩展","开始菜单","常见安装位置"].includes(e.kind))
@@ -103,7 +116,8 @@ function evidenceLabel(agent: MachineAgent) {
 
     <div class="manager-summary"><span><b>{{ installed.length }}</b> 个已安装</span><span><b>{{ configured }}</b> 个允许配置</span><span class="catalog-note">内置 {{ discovery.inventory?.catalog_count || '—' }} 条产品路径规则 · 扫描不会自动开启配置</span></div>
     <div v-if="discovery.error" class="manager-error" role="alert">{{ discovery.error }} <button class="btn" @click="discoverMachine()">重试</button></div>
-    <p v-for="warning in discovery.inventory?.warnings" :key="warning" class="manager-warning">{{ warning }}</p>
+    <p v-if="bindingError" class="manager-warning">MCP 配置位置读取失败：{{ bindingError }}</p>
+    <p v-for="warning in warnings" :key="warning" class="manager-warning">{{ warning }}</p>
 
     <div class="manager-toolbar">
       <div class="manager-tabs" role="tablist" aria-label="安装状态">
@@ -112,19 +126,20 @@ function evidenceLabel(agent: MachineAgent) {
       </div>
       <input v-model="keyword" class="input manager-search" placeholder="搜索工具名称或路径…" aria-label="搜索 Agent 工具" />
     </div>
-    <p class="manager-note">{{ list === 'installed' ? '关闭「允许配置」后，该工具会从总览、Agent 配置和技能分配中隐藏；原目录、链接与分配记录保留。' : '目录或缓存残留不视为已安装。安装后重新扫描即可识别；未知或便携工具可以编辑并确认自定义路径。' }}</p>
+    <p class="manager-note">{{ list === 'installed' ? '关闭「允许配置」后，该工具会从总览、技能和 MCP 分配中隐藏；原目录、链接与分配记录保留。' : '目录或缓存残留不视为已安装。安装后重新扫描即可识别；未知或便携工具可以编辑并确认自定义路径。' }}</p>
 
     <div class="agent-settings-list">
       <article v-for="agent in visible" :key="agent.id" class="agent-settings-row" :data-agent-id="agent.id">
-        <div class="tool-avatar">{{ agent.name.replace('OpenAI ','').replace('腾讯 ','').slice(0,2).toUpperCase() }}</div>
+        <div class="tool-avatar"><AgentIcon :id="agent.id" :name="agent.name" :size="25" /></div>
         <div class="tool-content">
           <div class="tool-title"><h3>{{ agent.name }}</h3><span class="badge" :class="agent.installed ? agent.custom ? 'gray' : 'green' : 'gray'">{{ agent.installed ? agent.custom ? '手动确认' : '已安装' : agent.confidence === 'missing' ? '未安装' : '待确认' }}</span></div>
           <div class="tool-path"><span>Skills</span><code :title="agent.skills_dir">{{ agent.skills_dir }}</code><button v-if="agent.dir_exists" class="path-link" title="打开技能目录" @click="openPath(agent.skills_dir)">↗</button></div>
-          <div class="tool-path"><span>MCP</span><code>{{ mcpTargets.find(t => t.agent_id === agent.id)?.binding?.path || '尚未绑定，可在编辑路径中指定' }}</code></div>
+          <div class="tool-path"><span>MCP</span><code>{{ mcpTarget(agent.id)?.binding?.path || (mcpTarget(agent.id)?.app_managed ? '由原工具设置管理' : '尚未绑定，可在编辑路径中指定') }}</code><button v-if="mcpTarget(agent.id)?.binding" class="path-link" title="打开 MCP 配置位置" @click="openPath(mcpTarget(agent.id)!.binding!.path)">↗</button></div>
           <div v-for="link in agent.path_links.filter(item => item.scope === 'directory')" :key="link.path" class="tool-link-map"><span>路径联接</span><code :title="link.path">{{ link.path }}</code><span>→ 实际目录</span><code :title="link.target">{{ link.target }}</code></div>
           <details v-if="agent.path_links.some(item => item.scope === 'skill')" class="tool-skill-links"><summary>{{ agent.path_links.filter(item => item.scope === 'skill').length }} 个技能目录链接 · 查看实际目标</summary><div v-for="link in agent.path_links.filter(item => item.scope === 'skill')" :key="link.path" class="tool-link-map"><code :title="link.path">{{ link.path }}</code><span>→</span><code :title="link.target">{{ link.target }}</code></div></details>
           <p v-if="agent.installed" class="tool-evidence" :title="agent.executable_path">{{ evidenceLabel(agent) }}<span v-if="!agent.dir_exists"> · 技能目录将在部署时创建</span></p>
           <p v-else class="tool-evidence">{{ agent.confidence === 'missing' ? '没有检测到程序安装证据' : '配置目录可能是历史残留，尚未确认程序已安装' }}</p>
+          <details v-if="agent.installed && mcpTarget(agent.id)" class="tool-integration"><summary>连接设置与生效方式</summary><p>Skills 按上方用户目录管理，开启后可在技能库分配。</p><p>{{ mcpTarget(agent.id)?.guide?.notes || mcpTarget(agent.id)?.blocked_reason }}</p><p>{{ mcpTarget(agent.id)?.reload_notice }}</p><p v-if="mcpTarget(agent.id)?.binding">MCP 格式：{{ mcpFormats.find(f => f.id === mcpTarget(agent.id)?.binding?.format)?.name || mcpTarget(agent.id)?.binding?.format }}</p><a v-if="mcpTarget(agent.id)?.guide?.docs_url" :href="mcpTarget(agent.id)?.guide?.docs_url" target="_blank" rel="noopener noreferrer">产品文档 ↗</a></details>
         </div>
         <div class="tool-actions">
           <button class="tool-edit" :disabled="discovery.loading || !!busy" @click="openEditor(agent)">{{ agent.installed ? '编辑路径' : '自定义确认' }}</button>
@@ -160,6 +175,10 @@ function evidenceLabel(agent: MachineAgent) {
 </template>
 
 <style scoped>
+.tool-integration { margin-top:9px; font-size:11px; color:var(--muted); }
+.tool-integration summary { cursor:pointer; }
+.tool-integration p { margin-top:7px; line-height:1.7; }
+.tool-integration a { display:inline-block; margin-top:7px; color:var(--accent); }
 .manager-heading,.manager-toolbar,.manager-footer,.manager-summary,.tool-title,.tool-path,.tool-actions,.management-control,.manager-actions { display:flex; align-items:center; }
 .manager-heading,.manager-toolbar,.manager-footer { justify-content:space-between; gap:18px; }
 .manager-heading h2 { font-size:17px; font-weight:600; }.manager-heading p { margin-top:5px; color:var(--muted); font-size:12px; }

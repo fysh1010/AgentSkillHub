@@ -24,6 +24,7 @@ pub fn guide(id: &str) -> Option<&'static Guide> {
 }
 pub fn reload_notice(id: &str) -> &'static str {
     match id {
+        "trae" | "trae-cn" => "配置立即写入磁盘；请在 Trae 的 MCP 设置中确认信任并重新连接，必要时重新加载窗口。",
         "qoder" | "qoder-cn" | "qoder-cli" => "配置立即写入磁盘；Qoder CLI 官方要求重启后加载 MCP。IDE 请重新加载连接或重启。",
         "claude" => "配置立即写入磁盘；请在 Claude Code 中用 /mcp 检查连接，必要时重新连接或重开会话。",
         "codex" => "配置立即写入磁盘；请在 Codex 的 MCP 设置中重新连接，必要时重开会话。授权仍在 Codex 内完成。",
@@ -59,6 +60,12 @@ pub fn resolve(id: &str) -> Option<(PathBuf, String)> {
     let mut format = g.format.clone();
     let mut candidates = vec![path];
     match id {
+        "trae" | "trae-cn" => {
+            if let Some(app) = super::env_dir("APPDATA") {
+                let solo = if id == "trae-cn" {"TRAE SOLO CN"} else {"TRAE SOLO"};
+                candidates.push(app.join(solo).join("User/mcp.json"));
+            }
+        }
         "qoder" | "qoder-cli" => {
             if let Some(dir) = super::env_dir("QODER_CONFIG_DIR") {
                 candidates = vec![dir.join("settings.json")];
@@ -130,6 +137,21 @@ pub fn resolve(id: &str) -> Option<(PathBuf, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn trae_global_mcp_uses_user_json_and_never_project_files() {
+        for id in ["trae", "trae-cn"] {
+            let guide = guide(id).unwrap();
+            assert_eq!(guide.format, "json");
+            assert!(guide.path.ends_with("/User/mcp.json"));
+            assert_ne!(guide.status, "app");
+            if super::super::env_dir("APPDATA").is_some() {
+                let (path, format) = resolve(id).unwrap();
+                assert_eq!(format, "json");
+                assert_eq!(path.file_name().unwrap(), "mcp.json");
+                assert_eq!(path.parent().unwrap().file_name().unwrap(), "User");
+            }
+        }
+    }
     #[test]
     fn catalog_covers_every_agent_and_keeps_unverified_schemas_read_only() {
         for agent in super::super::known_agents::KNOWN_AGENTS {

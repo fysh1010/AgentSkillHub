@@ -2,15 +2,12 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   AgentDef,
   AppConfig,
-  AuditEntry,
   DeleteResult,
   DeployResult,
   DiffItem,
-  SkillInfo,
   SkillDetail,
   SyncResult,
   AgentStatus,
-  DetectedAgent,
   MarketSource,
   MarketSkill,
   MarketSkillDetail,
@@ -22,14 +19,23 @@ import type {
   ManifestImportResult,
   MachineInventory,
   CustomBuiltinSource,
+  SkillAssignment,
 } from "../types";
 
 export function getSyncData(): Promise<SyncResult> {
   return invoke("get_sync_data");
 }
 
-export function scanSkills(): Promise<SkillInfo[]> {
-  return invoke("scan_skills_cmd");
+export function workspaceStamp(): Promise<string> {
+  return invoke("workspace_stamp");
+}
+
+export function applySkillAssignments(changes: SkillAssignment[], dryRun = false): Promise<DeployResult> {
+  return invoke("apply_skill_assignments", { changes, dryRun });
+}
+
+export function adoptAgentSkill(agentId: string, skillKey: string): Promise<string> {
+  return invoke("adopt_agent_skill", { agentId, skillKey });
 }
 
 export function setSkillsRoot(root: string): Promise<AppConfig> {
@@ -105,10 +111,6 @@ export function importExistingLinks(agentId: string): Promise<AppConfig> {
   return invoke("import_existing_links", { agentId });
 }
 
-export function detectAgents(): Promise<DetectedAgent[]> {
-  return invoke("detect_agents");
-}
-
 export function refreshDiscovery(): Promise<MachineInventory> {
   return invoke("refresh_discovery");
 }
@@ -150,16 +152,6 @@ export function ensureSkillIcon(slug: string, iconUrl: string): Promise<string> 
   return invoke("ensure_skill_icon", { slug, iconUrl });
 }
 
-// ===== 外部技能 =====
-
-export function listExternalSkills(agentId: string): Promise<ExternalSkill[]> {
-  return invoke("list_external_skills", { agentId });
-}
-
-export function adoptSkill(agentId: string, dirName: string): Promise<string> {
-  return invoke("adopt_skill", { agentId, dirName });
-}
-
 // ===== 工具内置技能来源（只读）=====
 
 export function saveBuiltinSource(source: CustomBuiltinSource): Promise<AppConfig> {
@@ -168,10 +160,6 @@ export function saveBuiltinSource(source: CustomBuiltinSource): Promise<AppConfi
 
 export function removeBuiltinSource(id: string): Promise<AppConfig> {
   return invoke("remove_builtin_source", { id });
-}
-
-export function detectBuiltinSources(): Promise<DetectedAgent[]> {
-  return invoke("detect_builtin_sources");
 }
 
 export function builtinSourceSkills(sourceId: string): Promise<ExternalSkill[]> {

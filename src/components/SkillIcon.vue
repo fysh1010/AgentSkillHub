@@ -27,23 +27,26 @@ const palette = computed(() => {
 });
 const failed = ref(false);
 const fallbackFailed = ref(false);
-watch(() => [props.src, props.fallbackSrc], () => { failed.value = false; fallbackFailed.value = false; });
+const loaded = ref(false);
+watch(() => [props.src, props.fallbackSrc], () => { failed.value = false; fallbackFailed.value = false; loaded.value = false; });
 const imageSource = computed(() => (!failed.value ? props.src : "") || (!fallbackFailed.value ? props.fallbackSrc : ""));
 function onImageError() {
+  loaded.value = false;
   if (props.src && !failed.value) failed.value = true;
   else fallbackFailed.value = true;
 }
 </script>
 
 <template>
-  <span class="skill-icon" :class="{ 'has-image': imageSource }" :style="imageSource ? undefined : palette" aria-hidden="true">
-    <img v-if="imageSource" :src="imageSource" alt="" loading="lazy" referrerpolicy="no-referrer" @error="onImageError" />
-    <SkillGlyph v-else :label="name" :description="description" />
+  <span class="skill-icon" :class="{ 'has-image': imageSource && loaded }" :style="imageSource && loaded ? undefined : palette" aria-hidden="true">
+    <img v-if="imageSource" :src="imageSource" :style="{opacity:loaded?1:0}" alt="" loading="lazy" referrerpolicy="no-referrer" @load="loaded=true" @error="onImageError" />
+    <SkillGlyph v-if="!imageSource || !loaded" :label="name" :description="description" />
   </span>
 </template>
 
 <style scoped>
 .skill-icon {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -56,5 +59,5 @@ function onImageError() {
 }
 .skill-icon svg { width: 56%; height: 56%; }
 .skill-icon.has-image { background: #fff; border-color: var(--border-soft); }
-.skill-icon img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.skill-icon img { position:absolute; inset:0; width: 100%; height: 100%; object-fit: contain; display: block; }
 </style>

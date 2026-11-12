@@ -1,17 +1,16 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, nextTick, ref, shallowRef, Transition, watch } from "vue";
+import { computed, defineAsyncComponent, onMounted, nextTick, ref, shallowRef, Transition, watch, type Component } from "vue";
 import { discoverMachine, discovery, loadAll, removeToast, store, toast, ui } from "./store";
 import { revealPath } from "./api/tauri";
 import { useUpdates } from "./composables/useUpdates";
 import pkg from "../package.json";
 import Dashboard from "./views/Dashboard.vue";
-import Skills from "./views/Skills.vue";
-import AgentConfig from "./views/AgentConfig.vue";
-import AuditView from "./views/AuditView.vue";
-import Settings from "./views/Settings.vue";
-import Market from "./views/Market.vue";
-import McpManager from "./views/McpManager.vue";
+import AssignmentPreview from "./components/AssignmentPreview.vue";
+import SkillLinkDialog from "./components/SkillLinkDialog.vue";
 import { appearanceOptions, useAppearance, type Appearance } from "./composables/useAppearance";
+import { useLiveRefresh, liveRefresh } from "./composables/useLiveRefresh";
+
+useLiveRefresh();
 
 const { appearance, setAppearance } = useAppearance();
 const updates = useUpdates();
@@ -22,7 +21,6 @@ const pages = [
   { id:"dashboard",name:"总览",icon:"M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z" },
   { id:"skills",name:"技能库",icon:"m12 3 9 5-9 5-9-5 9-5ZM3 8v9l9 5 9-5V8 M12 13v9" },
   { id:"market",name:"技能市场",icon:"M3 10h18 M5 10v11h14V10 M3 10l2-7h14l2 7 M9 21v-7h6v7" },
-  { id:"agents",name:"Agent 配置",icon:"M4 5h16 M4 12h16 M4 19h16 M8 3v4 M16 10v4 M10 17v4" },
   { id:"mcp",name:"MCP 管理",icon:"M8 3v4 M16 3v4 M5 7h14v4a7 7 0 0 1-14 0V7 M12 18v4" },
   { id:"audit",name:"部署记录",icon:"M8 3h10l3 3v15H3V3h2 M8 3v4h8V3 M7 12h10 M7 16h7" },
   { id:"settings",name:"设置",icon:"m9 3-1 3-3 1-2 4 2 2v3l3 3h3l2 2 4-2 1-3 3-1V9l-3-1-1-3-4-2-2 2H9Z M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" },
@@ -30,14 +28,10 @@ const pages = [
 const mainEl = ref<HTMLElement>();
 const navGroups = [
   { name: "工作空间", pages: pages.slice(0, 3) },
-  { name: "管理", pages: pages.slice(3, 6) },
+  { name: "管理", pages: pages.slice(3, 5) },
 ];
 const settingsPage = pages.find(p => p.id === "settings")!;
 const workspaceName = computed(() => store.config?.skills_root.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "未设置目录");
-const installedAgentCount = computed(() => {
-  const installed = new Set(discovery.inventory?.agents.filter(agent => agent.installed && !agent.shared).map(agent => agent.id) || []);
-  return store.agents.filter(agent => installed.has(agent.agent.id)).length;
-});
 function openLibrarySettings() {
   ui.settingsTab = "general";
   nav("settings");
@@ -49,22 +43,22 @@ async function openLibraryFolder() {
 }
 
 const current = ref(ui.page);
-const view = shallowRef(Dashboard);
+const view = shallowRef<Component>(Dashboard);
 
 const TOAST_ICONS: Record<string, string> = { success: "✓", error: "✕", info: "i" };
 
-const pageMap: Record<string, any> = {
+const pageMap: Record<string, Component> = {
   dashboard: Dashboard,
-  skills: Skills,
-  market: Market,
-  agents: AgentConfig,
-  mcp: McpManager,
-  audit: AuditView,
-  settings: Settings,
+  skills: defineAsyncComponent(() => import("./views/Skills.vue")),
+  market: defineAsyncComponent(() => import("./views/Market.vue")),
+  mcp: defineAsyncComponent(() => import("./views/McpManager.vue")),
+  audit: defineAsyncComponent(() => import("./views/AuditView.vue")),
+  settings: defineAsyncComponent(() => import("./views/Settings.vue")),
 };
 const pageName = computed(() => pages.find((p) => p.id === current.value)?.name || "总览");
 
 function nav(id: string) {
+  if (id === "agents") { ui.skillsView = "agents"; id = "skills"; }
   if (id === "discovery") { ui.settingsTab = "agents"; id = "settings"; }
   current.value = id;
   ui.page = id;
@@ -80,16 +74,11 @@ watch(
   }
 );
 
-function refreshOnFocus() {
-  if (!discovery.loading && (!discovery.inventory || Date.now()/1000-discovery.inventory.scanned_at > 30)) void discoverMachine();
-}
 onMounted(async () => {
-  window.addEventListener("focus",refreshOnFocus);
   void updates.initialize();
   await loadAll();
-  await discoverMachine();
+  await discoverMachine(false);
 });
-onUnmounted(() => window.removeEventListener("focus",refreshOnFocus));
 </script>
 
 <template>
@@ -121,7 +110,6 @@ onUnmounted(() => window.removeEventListener("focus",refreshOnFocus));
             </svg>
             <span>{{ p.name }}</span>
             <span v-if="p.id === 'skills'" class="nav-count">{{ store.skills.length }}</span>
-            <span v-if="p.id === 'agents'" class="nav-count">{{ installedAgentCount }}</span>
           </button>
         </nav>
       </div>
@@ -149,7 +137,7 @@ onUnmounted(() => window.removeEventListener("focus",refreshOnFocus));
       <div class="workspace-bar">
         <div class="breadcrumb">工作空间 <span>/</span> <b>{{ pageName }}</b></div>
         <div class="workspace-tools">
-          <span class="local-status"><i></i>{{ discovery.loading ? '正在发现本机工具' : '本地运行' }}</span>
+          <span class="local-status" :title="liveRefresh.error || '每 2 秒检查技能与 Agent 配置；回到窗口时立即检查'"><i></i>{{ liveRefresh.error ? '自动刷新待重试' : discovery.loading ? '正在发现本机工具' : '实时同步已开启' }}</span>
           <div class="appearance-picker">
             <i class="swatch" :style="{ background: activeAppearance.color }"></i>
             <select v-model="appearanceChoice" aria-label="界面配色">
@@ -172,6 +160,8 @@ onUnmounted(() => window.removeEventListener("focus",refreshOnFocus));
     </main>
 
     <!-- Toast -->
+    <AssignmentPreview />
+    <SkillLinkDialog />
     <div class="toast-wrap">
       <div v-for="t in store.toasts" :key="t.id" class="toast" :class="t.type">
         <span class="toast-icon">{{ TOAST_ICONS[t.type] || "i" }}</span>

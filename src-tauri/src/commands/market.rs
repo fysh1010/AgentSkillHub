@@ -990,69 +990,52 @@ pub fn ensure_skill_icon(slug: &str, icon_url: &str, skills_root: &str) -> Resul
     Ok(dest.to_string_lossy().to_string())
 }
 
-// ================= 外部技能（实体目录）=================
-
-/// 列出某 Agent skills 目录里的实体技能（非链接的真实目录）。
-/// 点开头条目（.system 等工具自带系统技能）也列出并标记 system=true：
-/// 只读展示与收编（复制），不会对它们做任何链接部署。
-pub fn list_external(skills_dir: &str) -> Vec<ExternalSkill> {
-    let mut out = Vec::new();
-    let Ok(rd) = std::fs::read_dir(skills_dir) else {
-        return out;
-    };
-    for e in rd.flatten() {
-        let dir_name = e.file_name().to_string_lossy().to_string();
-        let p = e.path();
-        // junction / symlink 的不算外部实体
-        match std::fs::symlink_metadata(&p) {
-            Ok(md) if md.file_type().is_symlink() => continue,
-            Ok(_) => {}
-            Err(_) => continue,
-        }
-        if !p.is_dir() {
-            continue;
-        }
-        let system = dir_name.starts_with('.');
-        let md_path = p.join("SKILL.md");
-        let (name, display, desc, _version, healthy) = if md_path.is_file() {
-            scan::read_skill_md_pub(&md_path)
-        } else {
-            (String::new(), String::new(), String::new(), String::new(), false)
-        };
-        out.push(ExternalSkill {
-            dir_name: dir_name.clone(),
-            name: if !display.is_empty() {
-                display
-            } else if !name.is_empty() {
-                name
-            } else {
-                dir_name
-            },
-            description: desc,
-            size_bytes: scan::dir_size_pub(&p),
-            healthy,
-            path: p.to_string_lossy().to_string(),
-            system,
-        });
-    }
-    out.sort_by(|a, b| a.dir_name.cmp(&b.dir_name));
-    out
-}
-
 /// 收编：把 Agent 里的实体技能复制进技能库（含 .system 等系统技能，纯只读复制）
 pub fn adopt(skills_dir: &str, dir_name: &str, skills_root: &str) -> Result<String, String> {
-    if dir_name.contains("..") || dir_name.contains('/') || dir_name.contains('\\') {
+    if dir_name.is_empty() || dir_name.starts_with(['.', '_']) || dir_name.contains("..") || dir_name.contains('/') || dir_name.contains('\\') || dir_name.contains(':') {
         return Err(format!("非法目录名: {dir_name}"));
     }
     let src = Path::new(skills_dir).join(dir_name);
     if !src.is_dir() {
         return Err(format!("源目录不存在: {}", src.display()));
     }
+    if !src.join("SKILL.md").is_file() { return Err("来源不是标准技能目录".into()); }
     let target = Path::new(skills_root).join(dir_name);
-    if target.exists() {
+    if std::fs::symlink_metadata(&target).is_ok() {
         return Err(format!("技能库已存在同名技能「{dir_name}」"));
     }
-    copy_dir_all(&src, &target)?;
+    std::fs::create_dir_all(skills_root).map_err(|e| format!("无法创建技能库：{e}"))?;
+    let source = std::fs::canonicalize(&src).map_err(|e| e.to_string())?;
+    let root = std::fs::canonicalize(skills_root).map_err(|e| e.to_string())?;
+    if root.starts_with(&source) { return Err("不能将技能导入其自身目录内部".into()); }
+    // 独占创建目标，避免另一个工具在检查后创建同名技能时被覆盖。
+    std::fs::create_dir(&target).map_err(|e| format!("无法创建导入目录（可能存在同名技能）：{e}"))?;
+    fn copy_skill(src: &Path, dst: &Path, depth: usize, count: &mut usize) -> Result<(), String> {
+        if depth > 24 { return Err("技能目录层级过深".into()); }
+        for entry in std::fs::read_dir(src).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let name = entry.file_name();
+            if matches!(name.to_str(), Some(".git" | "node_modules")) { continue; }
+            *count += 1;
+            if *count > 12_000 { return Err("技能文件超过 12000 项，请先整理来源目录".into()); }
+            let path = entry.path();
+            let md = std::fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+            if md.file_type().is_symlink() { return Err(format!("技能内部含外部链接，请先确认并整理：{}", path.display())); }
+            let target = dst.join(name);
+            if md.is_dir() {
+                std::fs::create_dir(&target).map_err(|e| e.to_string())?;
+                copy_skill(&path, &target, depth + 1, count)?;
+            } else if md.is_file() {
+                std::fs::copy(&path, &target).map_err(|e| e.to_string())?;
+            }
+        }
+        Ok(())
+    }
+    if let Err(error) = copy_skill(&source, &target, 0, &mut 0) {
+        // 只清理刚才独占创建、且从未写入链接的目录。
+        let _ = std::fs::remove_dir_all(&target);
+        return Err(error);
+    }
     Ok(dir_name.to_string())
 }
 
@@ -1090,28 +1073,25 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    #[cfg(windows)]
     #[test]
-    fn list_external_skips_links() {
-        let tmp = crate::commands::test_scratch("mkt_ext");
-        let lib = tmp.join("lib");
-        let agent = tmp.join("agent");
-        std::fs::create_dir_all(lib.join("real-skill")).unwrap();
-        std::fs::write(lib.join("real-skill").join("SKILL.md"), "---\nname: real\ndescription: x\n---\n").unwrap();
-        std::fs::create_dir_all(&agent).unwrap();
-        create_junction_for_test(&agent.join("linked"), &lib.join("real-skill"));
-        std::fs::create_dir_all(agent.join("plain")).unwrap();
-        let list = list_external(agent.to_str().unwrap());
-        let names: Vec<&str> = list.iter().map(|s| s.dir_name.as_str()).collect();
-        assert!(names.contains(&"plain"), "实体目录应被列出: {names:?}");
-        assert!(!names.contains(&"linked"), "链接不应被列为外部技能: {names:?}");
-        let _ = std::fs::remove_dir_all(&tmp);
+    fn adopt_refuses_nested_links_and_leaves_source_and_conflicts_intact() {
+        let tmp = crate::commands::test_scratch("adopt_link_guard");
+        let source = tmp.join("source/demo");
+        let root = tmp.join("library");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(tmp.join("private")).unwrap();
+        std::fs::write(source.join("SKILL.md"), "---\nname: demo\ndescription: demo\n---\n").unwrap();
+        std::fs::write(tmp.join("private/keep.txt"), "private").unwrap();
+        super::super::deploy::create_junction(&source.join("linked"), &tmp.join("private")).unwrap();
+        assert!(adopt(&tmp.join("source").to_string_lossy(), "demo", &root.to_string_lossy()).is_err());
+        assert!(!root.join("demo").exists());
+        assert!(source.join("SKILL.md").is_file());
+        assert_eq!(std::fs::read_to_string(tmp.join("private/keep.txt")).unwrap(), "private");
+        super::super::deploy::remove_junction(&source.join("linked")).unwrap();
+        std::fs::remove_dir_all(tmp).unwrap();
     }
 
-    fn create_junction_for_test(link: &Path, target: &Path) {
-        let _ = crate::commands::hidden_command("cmd")
-            .args(["/c", "mklink", "/J", &link.to_string_lossy(), &target.to_string_lossy()])
-            .output();
-    }
 }
 
 #[cfg(test)]

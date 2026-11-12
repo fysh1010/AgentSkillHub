@@ -3,8 +3,9 @@ import { computed, ref, watch } from "vue";
 import {
   store,
   openAgentSettings,
-  isEnabled,
-  toggleSkill,
+  isAssigned,
+  hasExternalSkill,
+  assignSkills,
   deploy,
   rollback,
   toast,
@@ -12,11 +13,14 @@ import {
   ensureTranslate,
   needsTranslation,
   transMap,
-  translateMany,
 } from "../store";
 import { computeDiff, importExistingLinks } from "../api/tauri";
 import { useEsc } from "../composables/useEsc";
 import type { DiffItem } from "../types";
+import AgentIcon from "../components/AgentIcon.vue";
+import { assignmentChanges, previewAssignments } from "../composables/useSkillAssignments";
+import { previewSkillLink } from '../composables/useSkillLinks';
+
 
 // Esc 关闭部署预览弹窗
 useEsc(() => {
@@ -84,8 +88,6 @@ watch(selectedId, async (id) => {
   diff.value = []; diffLoading.value = false; lastResult.value = null; showPreview.value = false;
   if (!id) return;
   await refreshDiff(id);
-  // 选中 Agent 后自动把英文描述排队翻译（限流逐条，译完即显示）
-  translateMany(store.skills.map((s) => s.description));
 });
 
 watch(() => agents.value.map(a => a.agent.id), ids => {
@@ -158,9 +160,16 @@ async function doImportExisting() {
 
 async function onToggle(skillKey: string, enabled: boolean) {
   if (!current.value) return;
-  await toggleSkill(current.value.agent.id, skillKey, enabled);
+  await assignSkills([{ agent_id:current.value.agent.id, skill_key:skillKey, enabled }]);
   await refreshDiff();
 }
+
+function bulk(mode: "all" | "none" | "invert") {
+  if (!current.value) return;
+  previewAssignments(assignmentChanges([current.value.agent.id], grouped.value.flatMap(([,skills]) => skills.map(s => s.key)), mode), "批量分配 · " + current.value.agent.name);
+}
+
+watch(() => store.revision, () => { if (!busy.value) void refreshDiff(); });
 
 function diffLabel(kind: string): string {
   const map: Record<string, string> = {
@@ -187,6 +196,7 @@ function diffTone(kind: string): string {
 </script>
 
 <template>
+  <div class="agent-workspace">
   <div class="config-layout">
     <!-- 左：Agent 列表 -->
     <aside class="agent-list card">
@@ -202,9 +212,9 @@ function diffTone(kind: string): string {
         :class="{ active: selectedId === a.agent.id }"
         @click="selectAgent(a.agent.id)"
       >
-        <span class="pulse" :class="!a.dir_ok ? 'red' : a.drift ? 'amber' : 'green'"></span>
+        <AgentIcon :id="a.agent.id" :name="a.agent.name" :size="20" />
         <span class="agent-name">{{ a.agent.name }}</span>
-        <span class="agent-count">{{ a.enabled_count }}</span>
+        <span class="agent-count" title="当前技能库中实际启用的技能数，与右侧全部开关一致；不含 Agent 自有技能">{{ a.assigned_skills.length }}</span>
       </button>
       <div v-if="!agents.length" class="empty" style="padding: 24px 8px">
         请在设置中开启已安装工具的「允许配置」。<button class="btn" style="margin-top:12px" @click="openAgentSettings()">管理工具 →</button>
@@ -262,6 +272,7 @@ function diffTone(kind: string): string {
         class="input skill-search"
         placeholder="搜索技能名称 / 描述 / 目录名…"
       />
+      <div class="agent-bulk"><span>当前筛选 · {{ grouped.flatMap(([,skills]) => skills).length }} 个技能</span><button class="btn ghost" :disabled="store.assigning" @click="bulk('all')">全选</button><button class="btn ghost" :disabled="store.assigning" @click="bulk('none')">全不选</button><button class="btn ghost" :disabled="store.assigning" @click="bulk('invert')">反选</button><small>开关即时应用</small></div>
 
       <!-- 技能开关列表 -->
       <div class="skill-groups">
@@ -275,7 +286,9 @@ function diffTone(kind: string): string {
               <span class="switch">
                 <input
                   type="checkbox"
-                  :checked="isEnabled(current.agent.id, s.key)"
+                  :checked="isAssigned(current.agent.id, s.key)"
+                  :disabled="store.assigning || hasExternalSkill(current.agent.id, s.key)"
+                  :title="hasExternalSkill(current.agent.id, s.key) ? '存在同名外部技能，请到按技能视图查看自有技能' : '即时启用或停用'"
                   @change="(e: any) => onToggle(s.key, (e.target as HTMLInputElement).checked)"
                 />
                 <span class="track"></span>
@@ -291,6 +304,7 @@ function diffTone(kind: string): string {
                 >译</button>
               </span>
               <span class="badge gray" v-if="!s.healthy" title="SKILL.md 缺失或 frontmatter 不合法">异常</span>
+              <button class="badge amber external-convert" v-if="hasExternalSkill(current.agent.id, s.key)" title="检查实体目录，预览备份并转为技能库链接" @click.stop.prevent="previewSkillLink(current.agent.id,s.key)">外部同名 · 转为链接</button>
             </label>
           </div>
         </div>
@@ -349,14 +363,19 @@ function diffTone(kind: string): string {
       </div>
     </div>
   </div>
+  </div>
 </template>
 
 <style scoped>
+.agent-bulk { display:flex; align-items:center; gap:4px; margin-bottom:12px; color:var(--muted); font-size:12px; }
+.agent-bulk > span { margin-right:8px; }
+.agent-bulk .btn { padding:4px 8px; font-size:12px; }
+.agent-bulk small { margin-left:auto; color:var(--faint); }
 .agent-search { margin:0 10px 12px; width:calc(100% - 20px); font-size:11px; }
 .config-layout {
   display: flex;
   gap: 16px;
-  height: calc(100vh - 126px);
+  min-height: calc(100vh - 250px);
 }
 
 .agent-list {

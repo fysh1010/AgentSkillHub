@@ -397,21 +397,21 @@
   },
   {
     "agent_id": "trae",
-    "path": "",
-    "format": "",
+    "path": "$APPDATA/Trae/User/mcp.json",
+    "format": "json",
     "docs_url": "https://docs.trae.cn/ide_add-mcp-servers",
-    "notes": "设置 → MCP → 原始配置（JSON）可打开真实用户文件；绑定实际路径后管理，不猜测私有目录。",
-    "checked_at": "2026-10-25",
-    "status": "app"
+    "notes": "用户级 MCP 与 User/settings.json 同目录，使用 mcpServers。可在 设置 → MCP → 原始配置（JSON）核对；使用自定义配置档或 SOLO 时可绑定实际文件。",
+    "checked_at": "2026-11-12",
+    "status": "verified"
   },
   {
     "agent_id": "trae-cn",
-    "path": "",
-    "format": "",
+    "path": "$APPDATA/Trae CN/User/mcp.json",
+    "format": "json",
     "docs_url": "https://docs.trae.cn/ide_add-mcp-servers",
-    "notes": "设置 → MCP → 原始配置（JSON）；项目级 .trae/mcp.json 与用户级分开。",
-    "checked_at": "2026-10-25",
-    "status": "app"
+    "notes": "用户级 MCP 与 User/settings.json 同目录，使用 mcpServers。优先已有用户文件；项目 .trae/mcp.json 不作为全局目标。自定义配置档可绑定实际文件；在 Trae 中确认信任或重连。",
+    "checked_at": "2026-11-12",
+    "status": "verified"
   },
   {
     "agent_id": "lingma",

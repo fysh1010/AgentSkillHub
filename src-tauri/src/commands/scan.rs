@@ -1,5 +1,6 @@
 use crate::models::SkillInfo;
 use std::fs;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 /// 从 SKILL.md 内容中提取 YAML frontmatter 的 name / display_name / description。
@@ -158,14 +159,15 @@ pub(crate) fn dir_fingerprint(path: &Path) -> u64 {
         for e in rd.flatten() {
             let Ok(md) = fs::symlink_metadata(e.path()) else { continue };
             // 每个条目 +1：让「增删条目」也能改变指纹
-            *acc = acc.wrapping_add(mtime_ms(&md)).wrapping_add(1);
+            let name_hash = e.file_name().to_string_lossy().bytes().fold(0u64, |h,b| h.wrapping_mul(131).wrapping_add(b as u64));
+            *acc = acc.wrapping_add(mtime_ms(&md)).wrapping_add(md.len()).wrapping_add(name_hash).wrapping_add(1);
             let name = e.file_name().to_string_lossy().to_string();
             if md.is_dir() && depth < 2 && !name.starts_with('.') && name != "node_modules" {
                 walk(&e.path(), depth + 1, acc);
             }
         }
     }
-    let mut acc = fs::symlink_metadata(path).ok().as_ref().map(mtime_ms).unwrap_or(0);
+    let mut acc = fs::metadata(path).ok().map(|md| mtime_ms(&md).wrapping_add(md.len())).unwrap_or(0);
     walk(path, 0, &mut acc);
     acc
 }
@@ -207,18 +209,19 @@ fn dir_size(path: &Path, depth: u32) -> u64 {
 /// 扫描技能库根目录（扁平结构：技能直接放在根目录；兼容旧的 分类/技能 两层结构）
 pub fn scan_skills(root: &str) -> Vec<SkillInfo> {
     let mut out = Vec::new();
-    let root_path = Path::new(root);
-    if !root_path.is_dir() {
-        return out;
-    }
-    let cats = match fs::read_dir(root_path) {
-        Ok(e) => e,
-        Err(_) => return out,
-    };
+    visit_skills(root, |path, name, category, key| {
+        out.push(make_skill(path, name, category, key));
+    });
+    out
+}
+
+/// 枚举技能目录；汇总等调用方不必加载详情、大小和图标。
+pub(super) fn visit_skills(root: &str, mut visit: impl FnMut(PathBuf, String, String, String)) {
+    let Ok(cats) = fs::read_dir(root) else { return };
     for cat_entry in cats.flatten() {
         let cat_path = cat_entry.path();
         let cat_name = cat_entry.file_name().to_string_lossy().to_string();
-        if cat_name == ".git" || cat_name.starts_with('.') || cat_name.starts_with('_') {
+        if cat_name.starts_with('.') || cat_name.starts_with('_') {
             // 隐藏目录（.system / .claude 等）与保留目录（_archive 等）不参与扫描
             continue;
         }
@@ -227,7 +230,7 @@ pub fn scan_skills(root: &str) -> Vec<SkillInfo> {
         }
         // 扁平结构：根目录下直接是技能目录（含 SKILL.md）
         if cat_path.join("SKILL.md").is_file() {
-            out.push(make_skill(cat_path, cat_name.clone(), "(根)".to_string(), cat_name));
+            visit(cat_path, cat_name.clone(), "(根)".to_string(), cat_name);
             continue;
         }
         // 旧两层结构：分类/技能
@@ -247,10 +250,10 @@ pub fn scan_skills(root: &str) -> Vec<SkillInfo> {
             if !sk_path.join("SKILL.md").is_file() {
                 continue;
             }
-            out.push(make_skill(sk_path, sk_name.clone(), cat_name.clone(), format!("{}/{}", cat_name, sk_name)));
+            let key = format!("{}/{}", cat_name, sk_name);
+            visit(sk_path, sk_name, cat_name.clone(), key);
         }
     }
-    out
 }
 
 /// 找技能目录里自带的官方图标，返回 data URL（base64）。
@@ -320,7 +323,7 @@ fn b64_encode(data: &[u8]) -> String {
 }
 
 /// 由技能目录构造 SkillInfo（读取 SKILL.md 元信息）
-fn make_skill(path: PathBuf, dir_name: String, category: String, key: String) -> SkillInfo {
+pub(super) fn make_skill(path: PathBuf, dir_name: String, category: String, key: String) -> SkillInfo {
     let (fname, fdisplay, fdesc, fversion, healthy) = read_skill_md(&path.join("SKILL.md"));
     let md = fs::symlink_metadata(&path).ok();
     let modified = md
@@ -367,6 +370,29 @@ pub fn resolve_skill_target(root: &str, key: &str) -> Option<PathBuf> {
     }
 }
 
+const PREVIEW_LIMIT: usize = 200 * 1024;
+
+fn read_preview(path: &Path) -> io::Result<String> {
+    let mut bytes = Vec::new();
+    fs::File::open(path)?.take((PREVIEW_LIMIT + 1) as u64).read_to_end(&mut bytes)?;
+    let truncated = bytes.len() > PREVIEW_LIMIT;
+    bytes.truncate(PREVIEW_LIMIT);
+    let mut content = match String::from_utf8(bytes) {
+        Ok(content) => content,
+        Err(error) if truncated && error.utf8_error().error_len().is_none() => {
+            let end = error.utf8_error().valid_up_to();
+            let mut bytes = error.into_bytes();
+            bytes.truncate(end);
+            String::from_utf8(bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?
+        }
+        Err(error) => return Err(io::Error::new(io::ErrorKind::InvalidData, error)),
+    };
+    if truncated {
+        content.push_str("…\n\n（内容过长，已截断）");
+    }
+    Ok(content)
+}
+
 /// 读取技能详情：SKILL.md 全文 + 文件清单（两层）+ 风险提示。
 /// 供前端「查看全文」弹窗与安装风险提示使用。
 pub fn read_skill_detail(root: &str, key: &str) -> Result<crate::models::SkillDetail, String> {
@@ -374,13 +400,7 @@ pub fn read_skill_detail(root: &str, key: &str) -> Result<crate::models::SkillDe
     let dir = resolve_skill_target(root, key).ok_or_else(|| format!("技能不存在: {key}"))?;
 
     // SKILL.md 全文（超长截断到 200KB，防内存/传输膨胀）
-    let content = fs::read_to_string(dir.join("SKILL.md"))
-        .unwrap_or_default();
-    let content = if content.len() > 200 * 1024 {
-        format!("{}…\n\n（内容过长，已截断）", &content[..200 * 1024])
-    } else {
-        content
-    };
+    let content = read_preview(&dir.join("SKILL.md")).unwrap_or_default();
 
     // 风险文件：可执行脚本 / 钩子 / 二进制
     let risky_name = |n: &str| {
@@ -462,6 +482,16 @@ pub fn read_skill_detail(root: &str, key: &str) -> Result<crate::models::SkillDe
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn long_markdown_preview_truncates_at_utf8_boundary() {
+        let dir = super::super::test_scratch("markdown_preview");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("SKILL.md");
+        let prefix = "a".repeat(PREVIEW_LIMIT - 1);
+        fs::write(&path, format!("{prefix}汉字")).unwrap();
+        assert_eq!(read_preview(&path).unwrap(), format!("{prefix}…\n\n（内容过长，已截断）"));
+    }
 
     #[test]
     fn frontmatter_parse() {

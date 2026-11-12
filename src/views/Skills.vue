@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { marked } from "marked";
 import {
   store,
+  ui,
   openAgentSettings,
   loadAll,
   isEnabled,
-  toggleSkill,
   deleteSkill,
   toast,
   ensureTranslate,
@@ -29,6 +29,12 @@ import {
 import type { SkillInfo, SkillDetail, TrashItem, SecurityReport } from "../types";
 import { useEsc } from "../composables/useEsc";
 import SkillIcon from "../components/SkillIcon.vue";
+import SkillAssignments from "../components/SkillAssignments.vue";
+import AgentOwnedSkills from "../components/AgentOwnedSkills.vue";
+import ResourceTabs from "../components/ResourceTabs.vue";
+import SkillAllocation from "../components/SkillAllocation.vue";
+import AgentConfig from "./AgentConfig.vue";
+const resourceTab = ref("library");
 
 // Esc 按弹窗层级关闭：全文预览 > 删除确认 > 技能详情
 useEsc(() => {
@@ -40,6 +46,9 @@ useEsc(() => {
 const keyword = ref("");
 const activeCat = ref("全部");
 const selected = ref<SkillInfo | null>(null);
+watch(() => store.skills, skills => {
+  if (selected.value) selected.value = skills.find(s => s.key === selected.value!.key) || null;
+});
 
 // ---------- 删除技能（移入 Windows 回收站）----------
 
@@ -151,6 +160,16 @@ function removeTag(t: string) {
 const detail = ref<SkillDetail | null>(null);
 const detailLoading = ref(false);
 const secReport = ref<SecurityReport | null>(null);
+watch(() => store.revision, async () => {
+  void loadSecuritySummary();
+  const key = detail.value?.key;
+  if (!key || detailLoading.value) return;
+  if (!store.skills.some(s => s.key === key)) { detail.value = null; return; }
+  try {
+    const [updated, security] = await Promise.all([readSkillDetail(key), scanSkillSecurity(key)]);
+    if (detail.value?.key === key) { detail.value = updated; secReport.value = security; }
+  } catch { /* 下次目录刷新时重试，保留当前只读预览。 */ }
+});
 
 async function openFull() {
   if (!selected.value || detailLoading.value) return;
@@ -237,9 +256,14 @@ onMounted(() => {
         <h1>技能库</h1>
         <p class="sub">来源：{{ store.config?.skills_root }}</p>
       </div>
-      <input v-model="keyword" class="input search" placeholder="搜索技能名称 / 描述 / 分类…" />
+      <input v-if="resourceTab === 'library' && ui.skillsView === 'cards'" v-model="keyword" class="input search" placeholder="搜索技能名称 / 描述 / 分类…" />
     </header>
-
+    <ResourceTabs v-model="resourceTab" label="技能库来源视图" :items="[{id:'library',name:'技能库',count:store.skills.length},{id:'owned',name:'Agent 自有技能',count:store.ownedSkills.length}]" />
+    <template v-if="resourceTab === 'library'">
+    <div class="library-toolbar"><div class="library-view-switch" role="group" aria-label="技能库视图"><button :class="{active:ui.skillsView === 'list'}" @click="ui.skillsView = 'list'">列表</button><button :class="{active:ui.skillsView === 'cards'}" @click="ui.skillsView = 'cards'">卡片</button><button :class="{active:ui.skillsView === 'agents'}" @click="ui.skillsView = 'agents'">按 Agent</button></div><button class="btn" @click="openAgentSettings()">管理 Agent</button></div>
+    <SkillAllocation v-if="ui.skillsView === 'list'" @detail="openDetail" />
+    <AgentConfig v-else-if="ui.skillsView === 'agents'" />
+    <template v-else>
     <div class="cats" v-if="categories.length > 2">
       <button class="cat" :class="{ active: showStarred }" @click="showStarred = !showStarred">
         ★ 收藏 <span class="cat-count">{{ store.skills.filter((s) => isStarred(s.key)).length }}</span>
@@ -311,12 +335,17 @@ onMounted(() => {
             </svg>
           </button>
         </div>
+        <SkillAssignments :skill-key="s.key" />
       </div>
       <div v-if="!filtered.length" class="card empty" style="grid-column: 1/-1">
         <div class="icon">⌕</div>
         没有匹配的技能，换个关键词试试。
       </div>
     </div>
+
+    </template>
+    </template>
+    <AgentOwnedSkills v-else />
 
     <!-- 详情弹窗 -->
     <div v-if="selected" class="modal-mask" @click.self="selected = null">
@@ -370,21 +399,9 @@ onMounted(() => {
             </span>
           </div>
 
-          <h3 style="margin: 16px 0 10px; font-size: 13.5px; color: var(--muted)">已分配给以下 Agent</h3>
+          <h3 style="margin: 16px 0 10px; font-size: 13.5px; color: var(--muted)">分配到 Agent · 点击图标启停</h3>
           <div v-if="!store.agents.length" class="empty" style="padding:12px">请先在设置中允许配置本机工具。<button class="btn" @click="selected = null; openAgentSettings()">管理工具 →</button></div>
-          <div class="assign-list">
-            <label v-for="a in store.agents" :key="a.agent.id" class="assign-item">
-              <span>{{ a.agent.name }}</span>
-              <span class="switch">
-                <input
-                  type="checkbox"
-                  :checked="isEnabled(a.agent.id, selected!.key)"
-                  @change="(e: any) => toggleSkill(a.agent.id, selected!.key, (e.target as HTMLInputElement).checked)"
-                />
-                <span class="track"></span>
-              </span>
-            </label>
-          </div>
+          <SkillAssignments :skill-key="selected.key" />
         </div>
         <div class="modal-foot">
           <button class="btn" style="margin-right: auto" :disabled="detailLoading" @click="openFull()">
@@ -465,7 +482,7 @@ onMounted(() => {
     </div>
 
     <!-- 应用内回收站 -->
-    <div class="trash-section">
+    <div v-if="resourceTab === 'library'" class="trash-section">
       <button class="trash-toggle" @click="toggleTrash">
         🗑 应用内回收站
         <span v-if="trash.length" class="cat-count">{{ trash.length }}</span>
@@ -494,6 +511,10 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.library-toolbar { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:20px; }
+.library-view-switch { display:flex; padding:3px; gap:3px; background:var(--panel-2); border:1px solid var(--border-soft); border-radius:8px; }
+.library-view-switch button { padding:6px 16px; border:1px solid transparent; border-radius:5px; color:var(--muted); background:none; font:inherit; cursor:pointer; font-size:12px; }
+.library-view-switch button.active { background:var(--panel); border-color:var(--border); color:var(--text); box-shadow:var(--shadow-sm); }
 .page-head {
   display: flex;
   align-items: flex-end;
