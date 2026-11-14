@@ -6,9 +6,9 @@ use std::collections::HashMap;
 pub struct SkillInfo {
     /// 技能目录名
     pub name: String,
-    /// 分类（父目录名）
+    /// 分类（相对根目录的完整父目录路径，根目录技能为 "(根)"）
     pub category: String,
-    /// 唯一标识："分类/技能名"
+    /// 唯一标识：相对根目录的完整技能路径，支持多层文件夹
     pub key: String,
     /// 绝对路径
     pub path: String,

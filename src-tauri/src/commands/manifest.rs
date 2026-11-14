@@ -80,8 +80,11 @@ pub fn import_manifest(
             "清单版本不兼容（v{ver}，当前支持 v{MANIFEST_VERSION}），请升级应用后再导入"
         ));
     }
-    let manifest: Manifest =
+    let mut manifest: Manifest =
         serde_json::from_value(v).map_err(|e| format!("清单结构不合法: {e}"))?;
+    crate::commands::scan::normalize_skill_references(
+        &cfg.skills_root, &mut manifest.agent_configs, &mut manifest.skill_meta,
+    );
 
     // agents 只增不改
     for a in &manifest.agents {
@@ -235,6 +238,25 @@ mod tests {
         assert!(!crate::commands::agent_policy::enabled(&local, "claude"));
         assert!(local.agent_configs["claude"].enabled_skills.is_empty());
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn import_old_manifest_maps_categorized_keys_and_metadata() {
+        let dir = tmp("classified");
+        let root = dir.to_string_lossy().to_string();
+        let cfg = sample_cfg(&root);
+        let file = write_manifest(&cfg, "1.1.1").unwrap();
+        fs::create_dir_all(dir.join("开发/a")).unwrap();
+        fs::write(dir.join("开发/a/SKILL.md"), "---\nname: a\n---").unwrap();
+        fs::write(dir.join(".agentskillhub-skill-aliases.json"), r#"{"version":1,"aliases":{"a":"开发/a"}}"#).unwrap();
+        let mut local = cfg;
+        local.agent_configs.clear();
+        local.skill_meta.clear();
+        let result = import_manifest(&mut local, &file, &["claude".into()].into_iter().collect()).unwrap();
+        assert_eq!(local.agent_configs["claude"].enabled_skills, ["开发/a", "b"]);
+        assert!(local.skill_meta["开发/a"].starred);
+        assert_eq!(result.missing_skills, 1);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

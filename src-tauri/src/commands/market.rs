@@ -29,6 +29,109 @@ pub fn default_market_sources() -> Vec<MarketSource> {
     ]
 }
 
+struct InstallTarget {
+    key: String,
+    path: PathBuf,
+    fingerprint: Option<String>,
+}
+
+fn checked_library_dir(root: &Path, path: &Path) -> Result<(), String> {
+    let relative = path.strip_prefix(root).map_err(|_| "目录不在技能库内")?;
+    let mut current = root.to_path_buf();
+    for part in relative.components() {
+        if !matches!(part, std::path::Component::Normal(_)) { return Err("非法库内路径".into()); }
+        current.push(part);
+        if super::deploy::is_junction(&current) { return Err(format!("目录是外部链接，未改写：{}", current.display())); }
+        if current.exists() && !current.is_dir() { return Err(format!("目录被文件占用：{}", current.display())); }
+        if current.join("SKILL.md").is_file() { return Err("分类路径经过一个技能目录，不能在其内部安装".into()); }
+    }
+    Ok(())
+}
+
+fn prepare_install(root: &str, name: &str, force: bool, category: &str) -> Result<InstallTarget, String> {
+    if name.is_empty() { return Err("技能名称为空".into()); }
+    scan::validate_category(name)?;
+    scan::validate_category_path(category)?;
+    let existing = scan::find_skill_key(root, name)?;
+    if !force && existing.is_some() { return Err(format!("技能已安装于 {}，请选择更新", existing.unwrap())); }
+    if force && existing.is_none() { return Err("技能已被移除，请刷新市场后重新安装".into()); }
+    let key = existing.unwrap_or_else(|| if category.is_empty() { name.into() } else { format!("{category}/{name}") });
+    let path = Path::new(root).join(&key);
+    let parent = path.parent().ok_or("安装目录无效")?;
+    checked_library_dir(Path::new(root), parent)?;
+    if parent != Path::new(root) && parent.join("SKILL.md").is_file() { return Err("分类目录本身是一个技能，不能在其内部安装".into()); }
+    let fingerprint = if force {
+        Some(super::skill_links::fingerprint(&path)?)
+    } else {
+        if std::fs::symlink_metadata(&path).is_ok() { return Err("安装位置已被其他内容占用".into()); }
+        None
+    };
+    Ok(InstallTarget { key, path, fingerprint })
+}
+
+/// 下载成功后才替换实体目录，更新沿用原分类及 key，现有 Agent 链接无需变化。
+fn commit_install(root: &str, plan: &InstallTarget, staged: &Path) -> Result<String, String> {
+    if !staged.join("SKILL.md").is_file() { return Err("下载结果缺少 SKILL.md，原技能未改动".into()); }
+    checked_library_dir(Path::new(root), plan.path.parent().ok_or("安装目录无效")?)?;
+    if let Some(expected) = &plan.fingerprint {
+        if super::skill_links::fingerprint(&plan.path)? != *expected { return Err("技能在下载期间被外部修改，未覆盖，请刷新重试".into()); }
+    } else if std::fs::symlink_metadata(&plan.path).is_ok() {
+        return Err("安装位置在下载期间被占用，未覆盖".into());
+    }
+    std::fs::create_dir_all(plan.path.parent().unwrap()).map_err(|e| e.to_string())?;
+    checked_library_dir(Path::new(root), &Path::new(root).join("_archive/trash"))?;
+    let backup = if plan.fingerprint.is_some() {
+        Some(super::delete::move_to_trash(root, &plan.path, &plan.key)?)
+    } else { None };
+    if let Err(error) = std::fs::rename(staged, &plan.path) {
+        let recovery = backup.map(|name| std::fs::rename(Path::new(root).join("_archive/trash").join(name), &plan.path));
+        return Err(format!("安装归位失败：{error}；{}", match recovery {
+            Some(Ok(())) => "原技能已恢复".into(),
+            Some(Err(e)) => format!("原技能仍在回收站：{e}"),
+            None => "现有内容未覆盖".into(),
+        }));
+    }
+    Ok(plan.key.clone())
+}
+
+/// 三种市场源共用分类定位与更新保护，下载过程不触碰当前版本。
+pub fn install_in_library(
+    root: &str, kind: &str, repo: &str, reference: &str, owner: &str,
+    icon_url: &str, force: bool, category: &str, before_commit: impl FnOnce() -> Result<(), String>,
+) -> Result<String, String> {
+    if !Path::new(root).is_absolute() { return Err("技能库必须使用绝对路径".into()); }
+    let name = reference.rsplit('/').next().unwrap_or("");
+    let plan = prepare_install(root, name, force, category)?;
+    let archive = Path::new(root).join("_archive");
+    checked_library_dir(Path::new(root), &archive)?;
+    std::fs::create_dir_all(&archive).map_err(|e| e.to_string())?;
+    let unique = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|e| e.to_string())?.as_nanos();
+    let staging = archive.join(format!("install-{}-{unique}", std::process::id()));
+    std::fs::create_dir(&staging).map_err(|e| e.to_string())?;
+    let stage_root = staging.to_string_lossy();
+    let result = (|| {
+        let key = match kind {
+            "clawhub" => {
+                let supplied = reference.split_once('/').map(|(owner, _)| owner).unwrap_or("");
+                clawhub_install(name, if owner.is_empty() { supplied } else { owner }, &stage_root, icon_url)?
+            }
+            "github" => github_install(repo, reference, &stage_root)?,
+            "skillhub" => skillhub_install(name, owner, &stage_root, icon_url)?,
+            _ => return Err(format!("未知源类型: {kind}")),
+        };
+        before_commit()?;
+        // 再查同名条目，保护下载期间新增或移入其他分类的技能。
+        let current = scan::find_skill_key(root, name)?;
+        if current.as_deref() != plan.fingerprint.as_ref().map(|_| plan.key.as_str()) {
+            return Err("技能库在下载期间发生变化，未覆盖，请刷新重试".into());
+        }
+        commit_install(root, &plan, &staging.join(key))
+    })();
+    // 只清理本次独占创建的暂存目录，不遍历技能库或外部链接。
+    if !super::deploy::is_junction(&staging) { let _ = std::fs::remove_dir_all(&staging); }
+    result
+}
+
 // ================= 基础工具 =================
 
 /// 调用 curl 执行 GET，返回字节
@@ -81,6 +184,7 @@ fn now_secs() -> u64 {
 
 /// ClawHub 搜索（q 为空时浏览默认 feed）
 pub fn clawhub_search(query: &str, skills_root: &str) -> Result<Vec<MarketSkill>, String> {
+    let installed_names = scan::skill_names(skills_root);
     let q = urlencoding_lite(query);
     let url = format!("{CLAWHUB_BASE}/api/v1/search?q={q}&size=40");
     let body = http_get_text(&url)?;
@@ -118,7 +222,7 @@ pub fn clawhub_search(query: &str, skills_root: &str) -> Result<Vec<MarketSkill>
                 .pointer("/metrics/updatedAt")
                 .and_then(|x| x.as_u64())
                 .unwrap_or(0);
-            let installed = Path::new(skills_root).join(&slug).is_dir();
+            let installed = installed_names.contains(&slug.to_lowercase());
             // --- 富字段：图标 / 主题 / 精选 / 作者头像 / 安全扫描 / 版本 ---
             let icon = it
                 .get("icon")
@@ -218,6 +322,7 @@ fn clawhub_list_items(
     v: &serde_json::Value,
     skills_root: &str,
 ) -> (Vec<MarketSkill>, Option<String>) {
+    let installed_names = scan::skill_names(skills_root);
     let mut out = Vec::new();
     for it in v.get("items").and_then(|x| x.as_array()).unwrap_or(&vec![]) {
         let slug = it.get("slug").and_then(|x| x.as_str()).unwrap_or("");
@@ -262,7 +367,7 @@ fn clawhub_list_items(
                 .and_then(|x| x.as_u64())
                 .unwrap_or(0)
                 / 1000,
-            installed: Path::new(skills_root).join(slug).is_dir(),
+            installed: installed_names.contains(&slug.to_lowercase()),
             reference: if owner.is_empty() {
                 slug.to_string()
             } else {
@@ -363,7 +468,7 @@ pub fn clawhub_install(
         return Err(format!("非法 slug: {slug}"));
     }
     let target = Path::new(skills_root).join(slug);
-    if target.exists() {
+    if target.exists() || scan::find_skill_key(skills_root, slug)?.is_some() {
         return Err(format!("技能库已存在同名技能「{slug}」，请先处理冲突"));
     }
     let mut url = format!("{CLAWHUB_BASE}/api/download?slug={}", urlencoding_lite(slug));
@@ -476,26 +581,12 @@ fn skillhub_err_message(stderr: &[u8]) -> String {
         .unwrap_or_else(|| "未知错误".to_string())
 }
 
-/// 判断技能是否已安装。
-///
-/// CLI 把社区技能装到 `skills_root/@<owner>/<slug>`，同时兼容平铺位置。
-/// 只查平铺路径会导致「装好了却仍显示可安装」，用户反复点击后撞上已存在错误。
-fn skillhub_installed(skills_root: &str, owner: &str, slug: &str) -> bool {
-    let root = Path::new(skills_root);
-    if root.join(slug).is_dir() {
-        return true;
-    }
-    if owner.is_empty() || slug.is_empty() {
-        return false;
-    }
-    root.join(format!("@{owner}")).join(slug).is_dir()
-}
-
 /// 腾讯 SkillHub 搜索：直连官方搜索接口。
 /// 相比调用本地 Python CLI（实测约 1.9s，且会弹出控制台窗口），直连约 0.5s，
 /// 且能拿到 icon_url / category / downloads / stars / 官方中文描述等原始字段。
 /// page 从 1 开始（服务端每页 60 条，前端用「加载更多」翻页）。
 pub fn skillhub_search(query: &str, skills_root: &str, page: u32) -> Result<Vec<MarketSkill>, String> {
+    let installed_names = scan::skill_names(skills_root);
     let page = page.max(1);
     let mut url = format!("{SKILLHUB_API}/api/v1/search?limit=60&page={page}");
     let q = query.trim();
@@ -547,7 +638,7 @@ pub fn skillhub_search(query: &str, skills_root: &str, page: u32) -> Result<Vec<
                     .and_then(|x| x.as_u64())
                     .unwrap_or(0)
                     / 1000,
-                installed: skillhub_installed(skills_root, owner, slug),
+                installed: installed_names.contains(&slug.to_lowercase()),
                 reference: slug.to_string(),
                 owner: owner.to_string(),
                 icon: String::new(),
@@ -707,6 +798,7 @@ pub fn skillhub_install(
         return Err(format!("非法技能名: {public_slug}"));
     }
     let ns = namespace.trim();
+    scan::validate_category(ns)?;
     // 冲突检查：平铺路径与 @namespace 嵌套路径都不能已存在
     let flat = Path::new(skills_root).join(slug);
     let nested = if ns.is_empty() {
@@ -714,7 +806,7 @@ pub fn skillhub_install(
     } else {
         Path::new(skills_root).join(format!("@{ns}")).join(slug)
     };
-    if flat.exists() || nested.exists() {
+    if flat.exists() || nested.exists() || scan::find_skill_key(skills_root, slug)?.is_some() {
         return Err(format!("技能库已存在同名技能「{slug}」，请先处理冲突"));
     }
     let mut args = vec!["install", slug, "--dir", skills_root];
@@ -742,8 +834,7 @@ pub fn skillhub_install(
             }
         }
     }
-    // CLI 会把技能装到 @namespace/<slug> 嵌套目录；技能库是扁平结构，
-    // 嵌套位置不参与扫描（@ 开头）。装完直接搬回根目录，装好即可用。
+    // 将 CLI 的 namespace 层归一化，最终分类位置由 install_in_library 统一决定。
     if nested.is_dir() && !flat.exists() {
         std::fs::rename(&nested, &flat).map_err(|e| {
             format!(
@@ -771,6 +862,7 @@ pub fn skillhub_install(
 
 /// 列出 GitHub 仓库（子路径）下的技能目录
 pub fn github_list(repo: &str, subpath: &str, skills_root: &str) -> Result<Vec<MarketSkill>, String> {
+    let installed_names = scan::skill_names(skills_root);
     let repo = repo.trim_matches('/');
     let sub = subpath.trim_matches('/');
     let url = if sub.is_empty() {
@@ -836,7 +928,7 @@ pub fn github_list(repo: &str, subpath: &str, skills_root: &str) -> Result<Vec<M
         for h in handles {
             let (name, desc) = h.join().map_err(|_| "线程异常".to_string())?;
             out.push(MarketSkill {
-                installed: Path::new(skills_root).join(&name).is_dir(),
+                installed: installed_names.contains(&name.to_lowercase()),
                 reference: dirs
                     .iter()
                     .find(|(n, _)| n == &name)
@@ -867,7 +959,7 @@ pub fn github_list(repo: &str, subpath: &str, skills_root: &str) -> Result<Vec<M
             s.reference = path.clone();
             s.name = name.clone();
             s.display_name = name.clone();
-            s.installed = Path::new(skills_root).join(name).is_dir();
+            s.installed = installed_names.contains(&name.to_lowercase());
         }
     }
     Ok(out)
@@ -881,7 +973,7 @@ pub fn github_install(repo: &str, skill_path: &str, skills_root: &str) -> Result
         return Err(format!("非法技能路径: {skill_path}"));
     }
     let target = Path::new(skills_root).join(name);
-    if target.exists() {
+    if target.exists() || scan::find_skill_key(skills_root, name)?.is_some() {
         return Err(format!("技能库已存在同名技能「{name}」，请先处理冲突"));
     }
     let bytes = http_get(&format!("https://github.com/{repo}/archive/HEAD.tar.gz"))?;
@@ -954,7 +1046,8 @@ pub fn ensure_skill_icon(slug: &str, icon_url: &str, skills_root: &str) -> Resul
     if icon_url.is_empty() || !icon_url.starts_with("http") {
         return Err("无效的图标地址".into());
     }
-    let dir = Path::new(skills_root).join(slug);
+    let key = scan::find_skill_key(skills_root, slug)?.ok_or_else(|| format!("技能不存在: {slug}"))?;
+    let dir = Path::new(skills_root).join(key);
     if !dir.is_dir() {
         return Err(format!("技能目录不存在: {}", dir.display()));
     }
@@ -1001,7 +1094,7 @@ pub fn adopt(skills_dir: &str, dir_name: &str, skills_root: &str) -> Result<Stri
     }
     if !src.join("SKILL.md").is_file() { return Err("来源不是标准技能目录".into()); }
     let target = Path::new(skills_root).join(dir_name);
-    if std::fs::symlink_metadata(&target).is_ok() {
+    if std::fs::symlink_metadata(&target).is_ok() || scan::find_skill_key(skills_root, dir_name)?.is_some() {
         return Err(format!("技能库已存在同名技能「{dir_name}」"));
     }
     std::fs::create_dir_all(skills_root).map_err(|e| format!("无法创建技能库：{e}"))?;
@@ -1042,6 +1135,68 @@ pub fn adopt(skills_dir: &str, dir_name: &str, skills_root: &str) -> Result<Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn categorized_install_rejects_duplicates_and_update_preserves_location() {
+        let root = crate::commands::test_scratch("categorized_install");
+        std::fs::create_dir_all(root.join("外层/开发/再一层/demo")).unwrap();
+        std::fs::write(root.join("外层/开发/再一层/demo/SKILL.md"), "---\nname: demo\n---\nold").unwrap();
+        let text = root.to_string_lossy();
+        assert!(prepare_install(&text, "demo", false, "其他").is_err());
+        assert!(adopt(&text, "demo", &text).is_err());
+        let plan = prepare_install(&text, "demo", true, "其他").unwrap();
+        assert_eq!(plan.key, "外层/开发/再一层/demo");
+        let staged = root.join("_archive/staged/demo");
+        std::fs::create_dir_all(&staged).unwrap();
+        std::fs::write(staged.join("SKILL.md"), "---\nname: demo\n---\nnew").unwrap();
+        #[cfg(windows)]
+        let link = {
+            let link = root.join("_archive/agent/demo");
+            super::super::deploy::create_junction(&link, &plan.path).unwrap();
+            link
+        };
+        assert_eq!(commit_install(&text, &plan, &staged).unwrap(), "外层/开发/再一层/demo");
+        assert!(std::fs::read_to_string(plan.path.join("SKILL.md")).unwrap().ends_with("new"));
+        assert!(std::fs::read_to_string(root.join("_archive/trash/外层/开发/再一层/demo/SKILL.md")).unwrap().ends_with("old"));
+        assert!(!root.join("其他/demo").exists());
+        #[cfg(windows)]
+        { assert!(std::fs::read_to_string(link.join("SKILL.md")).unwrap().ends_with("new")); super::super::deploy::remove_junction(&link).unwrap(); }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn staged_install_protects_modified_skills_and_invalid_downloads() {
+        let root = crate::commands::test_scratch("install_modified");
+        std::fs::create_dir_all(root.join("分类/demo")).unwrap();
+        std::fs::write(root.join("分类/demo/SKILL.md"), "---\nname: demo\n---\nold").unwrap();
+        let text = root.to_string_lossy();
+        let plan = prepare_install(&text, "demo", true, "").unwrap();
+        let stage = root.join("_archive/stage");
+        std::fs::create_dir_all(&stage).unwrap();
+        assert!(commit_install(&text, &plan, &stage).is_err());
+        std::fs::write(stage.join("SKILL.md"), "new").unwrap();
+        std::fs::write(plan.path.join("SKILL.md"), "externally modified").unwrap();
+        assert!(commit_install(&text, &plan, &stage).unwrap_err().contains("外部修改"));
+        assert_eq!(std::fs::read_to_string(plan.path.join("SKILL.md")).unwrap(), "externally modified");
+        assert!(!root.join("_archive/trash").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn new_install_can_use_a_category_and_never_overwrites_an_occupied_path() {
+        let root = crate::commands::test_scratch("new_category_install");
+        std::fs::create_dir_all(&root).unwrap();
+        let text = root.to_string_lossy();
+        assert!(prepare_install(&text, "demo", false, "../outside").is_err());
+        let plan = prepare_install(&text, "demo", false, "文档").unwrap();
+        let stage = root.join("_archive/staged");
+        std::fs::create_dir_all(&stage).unwrap();
+        std::fs::write(stage.join("SKILL.md"), "---\nname: demo\n---").unwrap();
+        assert_eq!(commit_install(&text, &plan, &stage).unwrap(), "文档/demo");
+        assert!(commit_install(&text, &plan, &stage).is_err());
+        assert!(root.join("文档/demo/SKILL.md").is_file());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn url_encoding() {

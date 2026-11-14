@@ -168,9 +168,7 @@ fn validate_entries(entries: &[Entry]) -> Result<(), String> {
             return Err(format!("快照包含无效或重复路径：{}", entry.path));
         }
         if let Some(root) = entry.path.strip_suffix("/SKILL.md") {
-            if root.split('/').count() <= 2 {
-                roots.insert(root);
-            }
+            roots.insert(root);
         }
     }
     for entry in entries {
@@ -195,12 +193,13 @@ fn collect(root: &Path) -> Result<Vec<Entry>, String> {
         if !skill.key.split('/').all(checked_part) {
             continue;
         }
-        // The existing traversal rejects links and Windows junctions. Also check
-        // the category directory before traversing a two-level skill.
-        if let Some((category, _)) = skill.key.split_once('/') {
-            let dir = root.join(category);
-            if dir.canonicalize().map_err(|e| e.to_string())? != dir {
-                return Err(format!("分类目录是外部链接：{category}"));
+        // Check every wrapper, not only the first category: deeper links must
+        // not allow backup traversal to escape the configured library.
+        let mut dir = root.clone();
+        for part in Path::new(&skill.key).parent().into_iter().flat_map(|p| p.components()) {
+            dir.push(part);
+            if super::deploy::is_junction(&dir) || dir.canonicalize().map_err(|e| e.to_string())? != dir {
+                return Err(format!("分类目录是外部链接：{}", dir.display()));
             }
         }
         skill_sync::local_files(&root.join(skill.key), &root, &mut paths)?;
@@ -660,10 +659,28 @@ mod tests {
     };
 
     #[test]
+    #[cfg(windows)]
+    fn encrypted_snapshot_rejects_links_in_deep_wrapper_directories() {
+        let tmp = super::super::test_scratch("backup_deep_link");
+        let root = tmp.join("library");
+        let outside = tmp.join("outside");
+        fs::create_dir_all(root.join("外层/内层")).unwrap();
+        fs::create_dir_all(outside.join("demo")).unwrap();
+        fs::write(outside.join("demo/SKILL.md"), "---\nname: demo\n---").unwrap();
+        let link = root.join("外层/内层/链接");
+        super::super::deploy::create_junction(&link, &outside).unwrap();
+        assert!(collect(&root).err().unwrap().contains("链接"));
+        let mut paths = Vec::new();
+        assert!(skill_sync::local_files(&link.join("demo"), &root, &mut paths).is_err());
+        super::super::deploy::remove_junction(&link).unwrap();
+        fs::remove_dir_all(tmp).unwrap();
+    }
+
+    #[test]
     fn encrypted_snapshot_round_trip_preserves_live_library() {
         let parent = super::super::test_scratch("encrypted_backup");
         let root = parent.join("current");
-        let skill = root.join("分类").join("样例");
+        let skill = root.join("外层/再包一层/分类/样例");
         fs::create_dir_all(&skill).unwrap();
         fs::write(skill.join("SKILL.md"), "# fixture skill").unwrap();
         fs::write(skill.join("data.bin"), [0, 255, 26, 10]).unwrap();
@@ -678,14 +695,14 @@ mod tests {
         assert!(unseal(&corrupted, pass).is_err());
         let restored = restore(&root, &unseal(&sealed, pass).unwrap()).unwrap();
         assert_eq!(
-            fs::read(restored.join("分类/样例/data.bin")).unwrap(),
+            fs::read(restored.join("外层/再包一层/分类/样例/data.bin")).unwrap(),
             [0, 255, 26, 10]
         );
-        assert!(!restored.join("分类/样例/.env").exists());
+        assert!(!restored.join("外层/再包一层/分类/样例/.env").exists());
         assert!(skill.join(".env").exists());
         let first_run = parent.join("new-computer/skills");
         let restored = restore(&first_run, &unseal(&sealed, pass).unwrap()).unwrap();
-        assert!(restored.join("分类/样例/SKILL.md").is_file());
+        assert!(restored.join("外层/再包一层/分类/样例/SKILL.md").is_file());
         assert!(!first_run.exists());
         for invalid in [
             "../SKILL.md",

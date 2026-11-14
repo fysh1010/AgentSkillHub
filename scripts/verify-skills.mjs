@@ -13,7 +13,9 @@ const port = 9241;
 const root = await mkdtemp(path.join(tmpdir(), "agentskillhub-skills-"));
 const home = path.join(root, "home");
 const library = path.join(home, "library");
-const exe = path.resolve("src-tauri/target/debug/agentskillhub.exe");
+const nestedCategory = "包一层/再包一层/01-开发工程";
+const validationTarget = path.resolve("src-tauri/target/skill-validation");
+const exe = path.join(validationTarget, "debug/agentskillhub.exe");
 const output = path.resolve("_tmp/skill-allocation-preview.png");
 const dirs = Object.fromEntries(["codex", "claude", "cursor", "qwen"].map(id => [id, path.join(home, "." + id, "skills")]));
 const skill = (name, description) => `---\nname: ${name}\ndescription: ${description}\n---\n\n# ${name}\n`;
@@ -23,8 +25,8 @@ async function makeSkill(dir, name, description) {
 }
 await Promise.all([mkdir(library, { recursive:true }), ...Object.values(dirs).map(dir => mkdir(dir, { recursive:true })), mkdir(path.dirname(output), { recursive:true })]);
 await makeSkill(library, "dev-assistant", "开发助手，代码审查与工程实践");
-await makeSkill(library, "web-design", "网页设计，构建清晰的产品界面");
-await makeSkill(library, "data-analysis", "数据分析，整理并解释表格数据");
+await makeSkill(path.join(library, nestedCategory), "web-design", "网页设计，构建清晰的产品界面");
+await makeSkill(path.join(library, "05-文档知识库"), "data-analysis", "数据分析，整理并解释表格数据");
 await makeSkill(dirs.claude, "agent-owned", "由其他软件安装的实体技能");
 await makeSkill(path.join(home,'.agents/skills'),'shared-user-fixture','跨工具共享用户技能');
 await makeSkill(path.join(dirs.codex, ".system"), "builtin-private-fixture", "必须交给原工具管理的内置技能");
@@ -32,6 +34,7 @@ const cfg = { skills_root:library,
   agents:Object.entries(dirs).map(([id,skills_dir]) => ({ id, name:{codex:"Codex",claude:"Claude Code",cursor:"Cursor",qwen:"Qwen Code"}[id], skills_dir, builtin:true })),
   agent_preferences:Object.fromEntries(Object.keys(dirs).map(id => [id,{enabled:true,manual_confirmed:true,executable_path:exe}])),
   agent_configs:{}, audit:[],
+  skill_meta:{[nestedCategory+"/web-design"]:{starred:true,tags:["界面"]}},
 };
 const configDirs = [...new Set([path.join(process.env.APPDATA,identifier), path.join(home,"AppData/Roaming",identifier)])];
 for (const dir of configDirs) {
@@ -43,7 +46,7 @@ for (const dir of configDirs) {
 if (process.argv.includes("--build")) {
   const config = JSON.parse(await readFile("src-tauri/tauri.conf.json","utf8"));
   const override = { identifier, app:{windows:config.app.windows.map(w => ({...w,additionalBrowserArgs:`--remote-debugging-port=${port}`,dataDirectory:path.join(root,"webview")}))} };
-  const build = spawn("cargo",["build","--manifest-path","src-tauri/Cargo.toml","--locked"],{env:{...process.env,TAURI_CONFIG:JSON.stringify(override)},stdio:"inherit",windowsHide:true});
+  const build = spawn("cargo",["build","--manifest-path","src-tauri/Cargo.toml","--target-dir",validationTarget,"--locked"],{env:{...process.env,TAURI_CONFIG:JSON.stringify(override)},stdio:"inherit",windowsHide:true});
   await new Promise((resolve,reject) => {build.on("error",reject);build.on("exit",code => code ? reject(new Error(`编译失败 ${code}`)) : resolve());});
 }
 const env = {...process.env,USERPROFILE:home,HOME:home,APPDATA:path.join(home,"AppData/Roaming"),LOCALAPPDATA:path.join(home,"AppData/Local"),CODEX_HOME:path.dirname(dirs.codex),CLAUDE_CONFIG_DIR:path.dirname(dirs.claude),QODER_CONFIG_DIR:path.join(home,".qoder"),WORKBUDDY_CONFIG_DIR:path.join(home,".workbuddy"),GEMINI_CLI_HOME:path.join(home,".gemini"),XDG_CONFIG_HOME:path.join(home,".config"),SKILL_TEST_EXE:exe};
@@ -101,6 +104,55 @@ try {
   await invoke("refresh_discovery");
   await navigation("技能库");
   await wait(()=>document.querySelectorAll(".allocation-row").length===3,"技能分配列表未显示");
+  await makeSkill(path.join(library,'_archive/trash/归档外层/05-文档知识库'),'archived-only','分类归档副本');
+  await makeSkill(path.join(library,'_archive/trash'),'开发__legacy-1790000000','旧格式归档副本');
+  const trashItems=await invoke('list_trash');
+  assert.equal(trashItems.length,2);
+  assert(trashItems.some(item=>item.name==='归档外层/05-文档知识库/archived-only'&&item.key==='归档外层/05-文档知识库/archived-only'));
+  assert(trashItems.some(item=>item.key==='开发/legacy'));
+  await dom(()=>document.querySelector('.trash-toggle').click());
+  await wait(()=>document.querySelectorAll('.trash-row').length===2,'分类归档未显示在回收站');
+  assert(await dom(()=>{const row=[...document.querySelectorAll('.trash-row')].find(row=>row.querySelector('.trash-key')?.textContent==='归档外层/05-文档知识库/archived-only');if(!row)return false;row.querySelector('button.primary').click();return true;}));
+  await wait(()=>document.querySelectorAll('.trash-row').length===1,'分类归档还原后未刷新');
+  assert((await readFile(path.join(library,'归档外层/05-文档知识库/archived-only/SKILL.md'),'utf8')).includes('分类归档副本'));
+  await rename(path.join(library,'归档外层/05-文档知识库/archived-only'),path.join(library,'_archive/trash/归档外层/05-文档知识库/archived-only'));
+  await wait(()=>document.querySelectorAll('.allocation-row').length===3,'归档副本不应计入当前技能');
+  await dom(()=>document.querySelector('.trash-toggle').click());
+  checks.push('回收站兼容旧平铺与分类文件夹；界面还原到原分类，归档副本不计入当前技能');
+  const chooseCategory = async category => {
+    assert(await dom(category=>{const button=[...document.querySelectorAll('.skill-categories button')].find(b=>b.title===category);if(!button)return false;button.click();return true;},category));
+    await pause(150);
+  };
+  await chooseCategory('包一层');
+  await wait(()=>document.querySelectorAll('.allocation-row').length===1,'父分类未包含深层技能');
+  await chooseCategory(nestedCategory);
+  await wait(()=>document.querySelectorAll('.allocation-row').length===1,'分类筛选未限制列表');
+  assert.equal(await dom(()=>document.querySelector('.allocation-skill b')?.textContent),'web-design');
+  await click('全选');
+  assert.equal(await dom(()=>document.querySelectorAll('.skill-select input:checked').length),1);
+  await chooseCategory('(根)');
+  assert.equal(await dom(()=>document.querySelectorAll('.skill-select input:checked').length),0,'切换分类必须清空批量选择');
+  assert.equal(await dom(()=>document.querySelector('.allocation-skill b')?.textContent),'dev-assistant');
+  await chooseCategory('全部技能');
+  await setField('select[aria-label="筛选技能标签"]','界面');
+  await wait(()=>document.querySelectorAll('.allocation-row').length===1,'标签筛选未生效');
+  await click('★ 仅收藏');
+  await chooseCategory('05-文档知识库');
+  assert.equal(await dom(()=>document.querySelectorAll('.allocation-row').length),0,'分类、标签、收藏应取交集');
+  await chooseCategory('全部技能');
+  await click('卡片');
+  assert.equal(await dom(()=>document.querySelectorAll('.grid .skill').length),1,'卡片必须复用同一筛选结果');
+  await click('按 Agent');
+  await wait(()=>document.querySelectorAll('.skill-item').length===1,'按 Agent 必须复用同一筛选结果');
+  await click('列表');
+  await setField('select[aria-label="筛选技能标签"]','');
+  await click('★ 仅收藏');
+  await setField('input[aria-label="搜索技能"]','文档知识库');
+  assert.equal(await dom(()=>document.querySelector('.allocation-skill b')?.textContent),'data-analysis','搜索应匹配分类路径');
+  await setField('input[aria-label="搜索技能"]','');
+  const categoryScreenshot=await cdp('Page.captureScreenshot',{format:'png'});
+  await writeFile(output.replace('.png','-categories.png'),Buffer.from(categoryScreenshot.data,'base64'));
+  checks.push('分类、未分类、标签、收藏与搜索联合筛选；列表、卡片、按 Agent 结果一致；切换筛选清空批量选择');
   assert.equal(await dom(()=>[...document.querySelectorAll(".nav-item")].some(b=>b.textContent.includes("Agent 配置"))),false,"不应保留重复导航");
   assert.equal(await dom(()=>document.querySelector(".allocation-row").querySelectorAll(".agent-toggle").length),4,"只应显示四个已开启工具");
   await click("卡片");await wait(()=>document.querySelectorAll(".grid .skill").length===3,"卡片视图未保留");await click("列表");
@@ -205,11 +257,14 @@ try {
   checks.push('实体技能先预览，再保留原目录备份并创建链接；可从界面恢复原文件');
   await click('技能库');
 
-  await makeSkill(library,"live-added","外部新增的技能");
+  const deepLiveCategory=path.join(library,'外层/内层/再包一层/更深一层');
+  await mkdir(deepLiveCategory,{recursive:true});
+  await pause(350);
+  await makeSkill(deepLiveCategory,"live-added","外部新增的技能");
   await wait(()=>[...document.querySelectorAll('.allocation-skill b')].some(b=>b.textContent==='live-added'),"外部新增未自动刷新");
-  await writeFile(path.join(library,"live-added/SKILL.md"),skill("live-added","外部修改后的描述"));
+  await writeFile(path.join(deepLiveCategory,"live-added/SKILL.md"),skill("live-added","外部修改后的描述"));
   await wait(()=>document.querySelector('.allocation-table').textContent.includes('外部修改后的描述'),"外部修改未自动刷新");
-  await rename(path.join(library,"live-added"),path.join(root,"removed-skill"));
+  await rename(path.join(deepLiveCategory,"live-added"),path.join(root,"removed-skill"));
   await wait(()=>![...document.querySelectorAll('.allocation-skill b')].some(b=>b.textContent==='live-added'),"外部移出技能未自动刷新");
   await makeSkill(dirs.cursor,"externally-installed","刚由其他工具安装");
   await click("Agent 自有技能");

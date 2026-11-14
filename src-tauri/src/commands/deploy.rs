@@ -425,12 +425,16 @@ pub fn deploy(agent: &AgentDef, cfg: &AppConfig, dry_run: bool) -> DeployResult 
 
 /// 回滚最近一次部署（反向执行其动作）
 pub fn rollback_last(cfg: &AppConfig, agent_id: &str) -> DeployResult {
-    let entry = cfg.audit.iter().rev().find(|a| a.agent_id == agent_id);
+    let entry = cfg.audit.iter().rev()
+        .take_while(|a| a.action != "classify_skills")
+        .find(|a| a.agent_id == agent_id);
     let Some(entry) = entry else {
         return DeployResult {
             ok: false,
             actions: Vec::new(),
-            summary: "没有可回滚的部署记录".into(),
+            summary: if cfg.audit.iter().any(|a| a.action == "classify_skills") {
+                "分类迁移前的部署记录仅供查阅，请使用迁移备份恢复；当前没有可回滚的新部署".into()
+            } else { "没有可回滚的部署记录".into() },
         };
     };
     let mut actions = Vec::new();
@@ -646,6 +650,21 @@ mod tests {
             format!("---\nname: {name}\ndescription: 测试\n---\n正文"),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn rollback_never_replays_targets_from_before_classification() {
+        let mut cfg = AppConfig::default();
+        let entry = |action: &str, agent_id: &str| AuditEntry {
+            id: action.into(), ts: 1, action: action.into(), agent_id: agent_id.into(),
+            detail: String::new(), actions: Vec::new(),
+        };
+        cfg.audit = vec![entry("deploy", "agent"), entry("classify_skills", "")];
+        let result = rollback_last(&cfg, "agent");
+        assert!(!result.ok);
+        assert!(result.summary.contains("分类迁移"));
+        cfg.audit.push(entry("deploy", "agent"));
+        assert!(rollback_last(&cfg, "agent").ok);
     }
 
     #[test]

@@ -78,21 +78,54 @@ fn trash_dir(root: &str) -> std::path::PathBuf {
     Path::new(root).join("_archive").join("trash")
 }
 
+/// 回收站支持旧的平铺名称与多层分类路径，拒绝越界和链接目录。
+fn trash_item_path(root: &str, name: &str) -> Result<std::path::PathBuf, String> {
+    let parts: Vec<_> = name.split('/').collect();
+    if parts.is_empty() || parts.iter().any(|part| part.is_empty()
+        || crate::commands::scan::validate_category(part).is_err()) {
+        return Err(format!("非法回收站条目: {name}"));
+    }
+    let mut path = Path::new(root).join("_archive");
+    if is_junction(&path) { return Err("归档目录是链接，拒绝操作".into()); }
+    path.push("trash");
+    if is_junction(&path) { return Err("回收站目录是链接，拒绝操作".into()); }
+    let count = parts.len();
+    for (index, part) in parts.into_iter().enumerate() {
+        path.push(part);
+        if is_junction(&path) { return Err("回收站条目或分类是链接，拒绝操作".into()); }
+        if index + 1 < count && path.join("SKILL.md").is_file() {
+            return Err("回收站分类位置已被旧技能条目占用，未改动".into());
+        }
+    }
+    Ok(path)
+}
+
+fn trash_skill_key(name: &str) -> String {
+    // 兼容旧的 分类__技能-时间戳；新条目直接保留相对分类路径。
+    let mut key = if name.contains('/') { name.to_string() } else { name.replace("__", "/") };
+    if let Some(idx) = key.rfind('-') {
+        let suffix = &key[idx + 1..];
+        if suffix.len() >= 10 && suffix.chars().all(|c| c.is_ascii_digit()) { key.truncate(idx); }
+    }
+    key
+}
+
 /// 把技能目录移入应用内回收站（同盘 rename，瞬时完成）。
 /// 重名时追加时间戳后缀。返回回收站里的条目名。
 pub fn move_to_trash(root: &str, target: &Path, key: &str) -> Result<String, String> {
-    let tdir = trash_dir(root);
-    fs::create_dir_all(&tdir).map_err(|e| format!("创建回收站目录失败: {e}"))?;
-    let base = key.replace('/', "__");
-    let mut name = base.clone();
+    let dest = trash_item_path(root, key)?;
+    fs::create_dir_all(dest.parent().ok_or("回收站目录无效")?).map_err(|e| format!("创建回收站目录失败: {e}"))?;
+    let mut name = key.to_string();
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    if tdir.join(&name).exists() {
-        name = format!("{base}-{ts}");
+    let mut collision = 0u32;
+    while fs::symlink_metadata(trash_dir(root).join(&name)).is_ok() {
+        name = if collision == 0 { format!("{key}-{ts}") } else { format!("{key}-{ts}{collision:03}") };
+        collision += 1;
     }
-    let dest = tdir.join(&name);
+    let dest = trash_item_path(root, &name)?;
     fs::rename(target, &dest).map_err(|e| {
         format!(
             "移入回收站失败（目录可能被占用）: {e}。原目录未改动：{}",
@@ -107,23 +140,13 @@ pub fn list_trash(root: &str) -> Vec<crate::models::TrashItem> {
     use crate::models::TrashItem;
     let mut out = Vec::new();
     let tdir = trash_dir(root);
-    let Ok(rd) = fs::read_dir(&tdir) else {
-        return out;
-    };
-    for e in rd.flatten() {
-        let p = e.path();
-        if !p.is_dir() {
-            continue;
-        }
-        let name = e.file_name().to_string_lossy().to_string();
-        // 目录名还原原 key："分类__技能" → "分类/技能"；"-<时间戳>" 后缀剥掉
-        let mut key = name.replace("__", "/");
-        if let Some(idx) = key.rfind('-') {
-            if key[idx + 1..].chars().all(|c| c.is_ascii_digit()) && key[idx + 1..].len() >= 10 {
-                key = key[..idx].to_string();
-            }
-        }
-        let deleted_ts = e
+    let mut entries = Vec::new();
+    crate::commands::scan::visit_skills(&tdir.to_string_lossy(), |path, _, _, name| {
+        if trash_item_path(root, &name).is_ok() { entries.push((name, path)); }
+    });
+    for (name, p) in entries {
+        let key = trash_skill_key(&name);
+        let deleted_ts = p
             .metadata()
             .ok()
             .and_then(|m| m.modified().ok())
@@ -144,28 +167,28 @@ pub fn list_trash(root: &str) -> Vec<crate::models::TrashItem> {
 
 /// 从应用内回收站还原技能到原位置
 pub fn restore_from_trash(root: &str, trash_name: &str) -> Result<String, String> {
-    if trash_name.contains("..") || trash_name.contains('/') || trash_name.contains('\\') {
-        return Err(format!("非法回收站条目: {trash_name}"));
-    }
-    let src = trash_dir(root).join(trash_name);
-    if !src.is_dir() {
+    let src = trash_item_path(root, trash_name)?;
+    if !src.join("SKILL.md").is_file() {
         return Err(format!("回收站中不存在: {trash_name}"));
     }
-    // 由目录名反推原 key（存进回收站时的编码是 "/" → "__"）
-    let mut key = trash_name.replace("__", "/");
-    if let Some(idx) = key.rfind('-') {
-        if key[idx + 1..].chars().all(|c| c.is_ascii_digit()) && key[idx + 1..].len() >= 10 {
-            key = key[..idx].to_string();
-        }
-    }
+    let key = trash_skill_key(trash_name);
+    // 校验解码后的 key；旧编码也不能绕过路径和保留名称检查。
+    trash_item_path(root, &key)?;
     let dest = Path::new(root).join(&key);
-    if dest.exists() {
+    if fs::symlink_metadata(&dest).is_ok() {
         return Err(format!(
             "原位置已被同名技能占用：{}。请先处理冲突再还原",
             dest.display()
         ));
     }
     if let Some(parent) = dest.parent() {
+        let mut wrapper = Path::new(root).to_path_buf();
+        for part in parent.strip_prefix(root).map_err(|_| "还原路径不在技能库内")?.components() {
+            wrapper.push(part);
+            if is_junction(&wrapper) || wrapper.join("SKILL.md").is_file() {
+                return Err("还原分类目录是链接或技能目录，未覆盖".into());
+            }
+        }
         fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {e}"))?;
     }
     fs::rename(&src, &dest).map_err(|e| format!("还原失败: {e}"))?;
@@ -174,29 +197,11 @@ pub fn restore_from_trash(root: &str, trash_name: &str) -> Result<String, String
 
 /// 彻底删除回收站里的技能（移入 Windows 回收站，仍可从系统还原）
 pub fn purge_trash(root: &str, trash_name: &str) -> Result<(), String> {
-    if trash_name.contains("..") || trash_name.contains('/') || trash_name.contains('\\') {
-        return Err(format!("非法回收站条目: {trash_name}"));
-    }
-    let p = trash_dir(root).join(trash_name);
-    if !p.is_dir() {
+    let p = trash_item_path(root, trash_name)?;
+    if !p.join("SKILL.md").is_file() {
         return Err(format!("回收站中不存在: {trash_name}"));
     }
     move_to_recycle_bin(&p)
-}
-
-/// 更新前清掉旧版本：把现有技能目录移入应用内回收站（更新失败可还原）
-pub fn force_clear_for_update(root: &str, key: &str) -> Result<(), String> {
-    let Some(target) = crate::commands::scan::resolve_skill_target(root, key) else {
-        return Ok(());
-    };
-    if is_junction(&target) {
-        remove_junction(&target)?;
-        return Ok(());
-    }
-    if target.is_dir() {
-        move_to_trash(root, &target, key)?;
-    }
-    Ok(())
 }
 
 /// 删除技能库中的一个技能（含链接与配置清理），成功后移入回收站
@@ -384,6 +389,73 @@ mod tests {
             agent_preferences: HashMap::new(),
             builtin_sources: Vec::new(),
         }
+    }
+
+    #[test]
+    fn categorized_trash_lists_legacy_entries_and_restores_to_original_category() {
+        let root = crate::commands::test_scratch("categorized_trash");
+        let skill = write_skill(&root, "05-文档知识库/doc");
+        let root_str = root.to_string_lossy();
+        let name = move_to_trash(&root_str, &skill, "05-文档知识库/doc").unwrap();
+        assert_eq!(name, "05-文档知识库/doc");
+        assert!(root.join("_archive/trash/05-文档知识库/doc/SKILL.md").is_file());
+        write_skill(&root, "_archive/trash/开发__legacy-1790000000");
+        let items = list_trash(&root_str);
+        assert_eq!(items.len(), 2);
+        assert!(items.iter().any(|item| item.key == "05-文档知识库/doc"));
+        assert!(items.iter().any(|item| item.key == "开发/legacy"));
+        assert_eq!(restore_from_trash(&root_str, &name).unwrap(), "05-文档知识库/doc");
+        assert!(skill.join("SKILL.md").is_file());
+        assert_eq!(restore_from_trash(&root_str, "开发__legacy-1790000000").unwrap(), "开发/legacy");
+        assert!(list_trash(&root_str).is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn categorized_trash_blocks_traversal_conflicts_and_category_operations() {
+        let root = crate::commands::test_scratch("trash_boundaries");
+        let source = write_skill(&root, "分类/doc");
+        let root_str = root.to_string_lossy();
+        let name = move_to_trash(&root_str, &source, "分类/doc").unwrap();
+        write_skill(&root, "分类/doc");
+        assert!(restore_from_trash(&root_str, &name).unwrap_err().contains("占用"));
+        assert!(restore_from_trash(&root_str, "分类").is_err());
+        assert!(purge_trash(&root_str, "分类").is_err());
+        for invalid in ["../doc", "分类/../../doc", "分类\\doc", "C:/doc", "/doc", "a/b/c", "开发__..__doc"] {
+            assert!(restore_from_trash(&root_str, invalid).is_err(), "{invalid}");
+        }
+        // 同一技能多次进入回收站时，每个条目均还原成相同的原 key。
+        for _ in 0..3 {
+            let entry = move_to_trash(&root_str, &source, "分类/doc").unwrap();
+            assert_eq!(trash_skill_key(&entry), "分类/doc");
+            write_skill(&root, "分类/doc");
+        }
+        assert_eq!(list_trash(&root_str).len(), 4);
+        let source = write_skill(&root, "occupied/extra");
+        write_skill(&root, "_archive/trash/occupied");
+        assert!(move_to_trash(&root_str, &source, "occupied/extra").is_err());
+        assert!(source.join("SKILL.md").is_file());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn categorized_trash_refuses_linked_categories_and_restore_targets() {
+        let tmp = crate::commands::test_scratch("trash_links");
+        let root = tmp.join("library");
+        let outside = tmp.join("outside");
+        write_skill(&root, "_archive/trash/分类/doc");
+        fs::create_dir_all(&outside).unwrap();
+        crate::commands::deploy::create_junction(&root.join("分类"), &outside).unwrap();
+        let text = root.to_string_lossy();
+        assert!(restore_from_trash(&text, "分类/doc").is_err());
+        assert!(!outside.join("doc").exists());
+        remove_junction(&root.join("分类")).unwrap();
+        crate::commands::deploy::create_junction(&root.join("_archive/trash/外部"), &outside).unwrap();
+        assert!(purge_trash(&text, "外部/doc").is_err());
+        assert_eq!(list_trash(&text).len(), 1);
+        remove_junction(&root.join("_archive/trash/外部")).unwrap();
+        fs::remove_dir_all(tmp).unwrap();
     }
 
     /// 回收站通道本身可用（端到端真实调用一次系统回收站）

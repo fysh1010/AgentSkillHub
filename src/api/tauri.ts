@@ -142,9 +142,10 @@ export function marketInstall(
   reference: string,
   owner: string,
   iconUrl = "",
-  force = false
+  force = false,
+  category = ""
 ): Promise<string> {
-  return invoke("market_install", { sourceId, reference, owner, iconUrl, force });
+  return invoke("market_install", { sourceId, reference, owner, iconUrl, force, category });
 }
 
 /** 给已安装技能补官方图标（下载落盘为 _icon.*） */

@@ -2,6 +2,7 @@ use crate::models::SkillInfo;
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
+use std::collections::{HashMap, HashSet};
 
 /// 从 SKILL.md 内容中提取 YAML frontmatter 的 name / display_name / description。
 /// 支持 YAML 块标量写法（`description: >` / `|` 后跟缩进多行，ClawHub 技能常见），
@@ -206,7 +207,7 @@ fn dir_size(path: &Path, depth: u32) -> u64 {
     total
 }
 
-/// 扫描技能库根目录（扁平结构：技能直接放在根目录；兼容旧的 分类/技能 两层结构）
+/// 扫描技能库根目录，支持任意层文件夹包装；遇到技能边界即停止向内扫描。
 pub fn scan_skills(root: &str) -> Vec<SkillInfo> {
     let mut out = Vec::new();
     visit_skills(root, |path, name, category, key| {
@@ -217,41 +218,145 @@ pub fn scan_skills(root: &str) -> Vec<SkillInfo> {
 
 /// 枚举技能目录；汇总等调用方不必加载详情、大小和图标。
 pub(super) fn visit_skills(root: &str, mut visit: impl FnMut(PathBuf, String, String, String)) {
-    let Ok(cats) = fs::read_dir(root) else { return };
-    for cat_entry in cats.flatten() {
-        let cat_path = cat_entry.path();
-        let cat_name = cat_entry.file_name().to_string_lossy().to_string();
-        if cat_name.starts_with('.') || cat_name.starts_with('_') {
-            // 隐藏目录（.system / .claude 等）与保留目录（_archive 等）不参与扫描
-            continue;
-        }
-        if !cat_path.is_dir() {
-            continue;
-        }
-        // 扁平结构：根目录下直接是技能目录（含 SKILL.md）
-        if cat_path.join("SKILL.md").is_file() {
-            visit(cat_path, cat_name.clone(), "(根)".to_string(), cat_name);
-            continue;
-        }
-        // 旧两层结构：分类/技能
-        let skills = match fs::read_dir(&cat_path) {
-            Ok(e) => e,
-            Err(_) => continue,
+    visit_skills_with_dirs(root, |path, name, category, key| visit(path, name, category, key), |_| {});
+}
+
+/// 共用遍历同时报告中间目录，供刷新检测观察深层文件夹中的增删。
+pub(super) fn visit_skills_with_dirs(
+    root: &str,
+    mut visit: impl FnMut(PathBuf, String, String, String),
+    mut directory: impl FnMut(&Path),
+) {
+    enum Step { Enter(PathBuf, String), Leave(PathBuf) }
+    let mut stack = vec![Step::Enter(PathBuf::from(root), String::new())];
+    let mut ancestors = HashSet::new();
+    while let Some(step) = stack.pop() {
+        let (path, key) = match step {
+            Step::Enter(path, key) => (path, key),
+            Step::Leave(real) => { ancestors.remove(&real); continue; }
         };
-        for sk_entry in skills.flatten() {
-            let sk_path = sk_entry.path();
-            let sk_name = sk_entry.file_name().to_string_lossy().to_string();
-            if sk_name.starts_with('.') || sk_name == "node_modules" {
-                continue;
+        let Ok(real) = fs::canonicalize(&path) else { continue };
+        let real = super::deploy::normalize(&real);
+        if !path.is_dir() || !ancestors.insert(real.clone()) { continue; }
+        directory(&path);
+        if !key.is_empty() && path.join("SKILL.md").is_file() {
+            let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            let category = key.rsplit_once('/').map(|(category, _)| category).unwrap_or("(根)").to_string();
+            visit(path, name, category, key);
+            ancestors.remove(&real);
+            continue;
+        }
+        stack.push(Step::Leave(real));
+        let Ok(entries) = fs::read_dir(&path) else { continue };
+        let mut entries: Vec<_> = entries.flatten().collect();
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries.into_iter().rev() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with(['.', '_']) || name == "node_modules" { continue; }
+            let key = if key.is_empty() { name } else { format!("{key}/{name}") };
+            if entry.path().is_dir() { stack.push(Step::Enter(entry.path(), key)); }
+        }
+    }
+}
+
+/// 仅枚举标识，不加载描述、图标和目录大小；市场共用现有扫描边界。
+pub fn skill_names(root: &str) -> HashSet<String> {
+    let mut names = HashSet::new();
+    visit_skills(root, |_, name, _, _| { names.insert(name.to_lowercase()); });
+    names
+}
+
+pub fn find_skill_key(root: &str, name: &str) -> Result<Option<String>, String> {
+    let mut keys = Vec::new();
+    visit_skills(root, |_, candidate, _, key| {
+        if candidate.eq_ignore_ascii_case(name) { keys.push(key); }
+    });
+    match keys.len() {
+        0 => Ok(None),
+        1 => Ok(keys.pop()),
+        _ => Err(format!("技能库有多个同名技能「{name}」：{}，请先处理冲突", keys.join("、"))),
+    }
+}
+
+/// 分类仅允许单个普通 Windows 目录名，根目录使用空字符串。
+pub fn validate_category(category: &str) -> Result<(), String> {
+    if category.is_empty() { return Ok(()); }
+    let stem = category.split('.').next().unwrap_or("").to_ascii_uppercase();
+    let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (stem.len() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT"))
+            && matches!(stem.as_bytes()[3], b'1'..=b'9'));
+    if category.starts_with(['.', '_']) || category.ends_with(['.', ' '])
+        || category.chars().any(|c| c.is_control() || "<>:\"/\\|?*".contains(c)) || reserved
+    {
+        return Err("分类必须是单层普通文件夹名，不能使用隐藏、归档或系统保留名称".into());
+    }
+    Ok(())
+}
+
+fn safe_alias_key(key: &str) -> bool {
+    !key.is_empty() && validate_category_path(key).is_ok()
+}
+
+/// 分类路径允许任意层级，每一段仍使用同样的路径边界检查。
+pub fn validate_category_path(category: &str) -> Result<(), String> {
+    if category.is_empty() { return Ok(()); }
+    for part in category.split('/') {
+        if part.is_empty() { return Err("分类路径不能包含空的目录名".into()); }
+        validate_category(part)?;
+    }
+    Ok(())
+}
+
+/// 分类迁移映射只包含库内相对路径，可随技能库迁移；绝不按同名猜测。
+pub fn skill_key_aliases(root: &str) -> HashMap<String, String> {
+    #[derive(serde::Deserialize)]
+    struct Aliases { version: u32, aliases: HashMap<String, String> }
+    let file = Path::new(root).join(".agentskillhub-skill-aliases.json");
+    if fs::metadata(&file).map(|m| m.len() > 1024 * 1024).unwrap_or(true) { return HashMap::new(); }
+    let Ok(content) = fs::read(file) else { return HashMap::new() };
+    if content.len() > 1024 * 1024 { return HashMap::new(); }
+    let Ok(data) = serde_json::from_slice::<Aliases>(&content) else { return HashMap::new() };
+    if data.version != 1 { return HashMap::new(); }
+    data.aliases.into_iter().filter(|(old, new)| safe_alias_key(old) && safe_alias_key(new)).collect()
+}
+
+pub fn canonical_skill_key(root: &str, key: &str, aliases: &HashMap<String, String>) -> String {
+    // 旧路径重新出现时以当前实体技能为准，映射不劫持新安装的同名技能。
+    let mut current = key;
+    let mut seen = HashSet::new();
+    while seen.insert(current) {
+        if safe_alias_key(current) && Path::new(root).join(current).join("SKILL.md").is_file() {
+            let target = Path::new(root).join(current);
+            if let (Ok(root), Ok(target)) = (fs::canonicalize(root), fs::canonicalize(target)) {
+                if target.starts_with(root) { return current.to_string(); }
             }
-            if !sk_path.is_dir() {
-                continue;
-            }
-            if !sk_path.join("SKILL.md").is_file() {
-                continue;
-            }
-            let key = format!("{}/{}", cat_name, sk_name);
-            visit(sk_path, sk_name, cat_name.clone(), key);
+            return key.to_string();
+        }
+        let Some(next) = aliases.get(current) else { break };
+        current = next;
+    }
+    key.to_string()
+}
+
+pub fn normalize_skill_references(
+    root: &str,
+    agents: &mut HashMap<String, crate::models::AgentConfig>,
+    meta: &mut HashMap<String, crate::models::SkillUserMeta>,
+) {
+    let aliases = skill_key_aliases(root);
+    if aliases.is_empty() { return; }
+    for config in agents.values_mut() {
+        let mut seen = HashSet::new();
+        config.enabled_skills = config.enabled_skills.iter()
+            .map(|key| canonical_skill_key(root, key, &aliases))
+            .filter(|key| seen.insert(key.clone())).collect();
+    }
+    let old = std::mem::take(meta);
+    for (key, value) in old {
+        let current = meta.entry(canonical_skill_key(root, &key, &aliases)).or_default();
+        current.starred |= value.starred;
+        for tag in value.tags {
+            if !current.tags.contains(&tag) { current.tags.push(tag); }
         }
     }
 }
@@ -357,12 +462,10 @@ pub(super) fn make_skill(path: PathBuf, dir_name: String, category: String, key:
 
 /// 根据技能 key 解析目标绝对路径：
 /// - 扁平 key（"code"）→ root/code
-/// - 两层 key（"开发/code"）→ root/开发/code
+/// - 多层 key（"外层/开发/code"）→ root/外层/开发/code
 pub fn resolve_skill_target(root: &str, key: &str) -> Option<PathBuf> {
-    let p = match key.split_once('/') {
-        Some((cat, name)) => Path::new(root).join(cat).join(name),
-        None => Path::new(root).join(key),
-    };
+    if !safe_alias_key(key) { return None; }
+    let p = Path::new(root).join(key);
     if p.is_dir() {
         Some(p)
     } else {
@@ -570,6 +673,95 @@ mod tests {
         assert_eq!(nested.category, "开发");
         assert_eq!(nested.name, "编码", "display_name 优先作为展示名");
         assert_eq!(nested.description, "折叠 多行", "块标量应折叠拼接");
+    }
+
+    #[test]
+    fn scans_arbitrarily_wrapped_skills_without_entering_skill_examples() {
+        let root = crate::commands::test_scratch("deep_skill_scan");
+        let category = std::iter::repeat_n("w", 40).collect::<Vec<_>>().join("/");
+        let key = format!("{category}/demo");
+        let skill = root.join(&key);
+        fs::create_dir_all(skill.join("examples/other")).unwrap();
+        fs::write(skill.join("SKILL.md"), "---\nname: demo\ndescription: nested\n---").unwrap();
+        fs::write(skill.join("examples/other/SKILL.md"), "---\nname: other\n---").unwrap();
+        for ignored in ["a/.git/bad", "a/_archive/bad", "a/node_modules/bad"] {
+            fs::create_dir_all(root.join(ignored)).unwrap();
+            fs::write(root.join(ignored).join("SKILL.md"), "---\nname: bad\n---").unwrap();
+        }
+        let text = root.to_string_lossy();
+        let skills = scan_skills(&text);
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].key, key);
+        assert_eq!(skills[0].category, category);
+        assert_eq!(resolve_skill_target(&text, &key).unwrap(), skill);
+        assert_eq!(find_skill_key(&text, "demo").unwrap(), Some(key));
+        assert!(resolve_skill_target(&text, "a/../../outside").is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn deep_scan_breaks_junction_cycles_and_keeps_direct_skill_links() {
+        let root = crate::commands::test_scratch("skill_scan_cycle");
+        let skill = root.join("wrapper/deeper/demo");
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(skill.join("SKILL.md"), "---\nname: demo\n---").unwrap();
+        super::super::deploy::create_junction(&root.join("wrapper/cycle"), &root).unwrap();
+        super::super::deploy::create_junction(&root.join("direct-link"), &skill).unwrap();
+        let skills = scan_skills(&root.to_string_lossy());
+        assert_eq!(skills.len(), 2);
+        assert!(skills.iter().any(|s| s.key == "wrapper/deeper/demo"));
+        assert!(skills.iter().any(|s| s.key == "direct-link"));
+        super::super::deploy::remove_junction(&root.join("wrapper/cycle")).unwrap();
+        super::super::deploy::remove_junction(&root.join("direct-link")).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn category_index_stops_at_skill_boundary_and_reports_duplicate_names() {
+        let root = fixture_root("category_index");
+        let example = root.join("gh-cli/examples/example");
+        fs::create_dir_all(&example).unwrap();
+        fs::write(example.join("SKILL.md"), "---\nname: example\n---").unwrap();
+        let root_str = root.to_string_lossy();
+        let names = skill_names(&root_str);
+        assert!(names.contains("code"));
+        assert!(!names.contains("example"));
+        assert_eq!(find_skill_key(&root_str, "CODE").unwrap().as_deref(), Some("开发/code"));
+        fs::create_dir_all(root.join("other/code")).unwrap();
+        fs::write(root.join("other/code/SKILL.md"), "---\nname: code\n---").unwrap();
+        assert!(find_skill_key(&root_str, "code").unwrap_err().contains("多个同名"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn classification_aliases_preserve_metadata_and_reject_unsafe_targets() {
+        let root = fixture_root("aliases");
+        fs::write(root.join(".agentskillhub-skill-aliases.json"), r#"{"version":1,"aliases":{"code":"开发/code","unsafe":"../outside","loop":"loop","gh-cli":"开发/code"}}"#).unwrap();
+        let root_str = root.to_string_lossy();
+        let aliases = skill_key_aliases(&root_str);
+        assert!(!aliases.contains_key("unsafe"));
+        assert_eq!(canonical_skill_key(&root_str, "loop", &aliases), "loop");
+        assert_eq!(canonical_skill_key(&root_str, "gh-cli", &aliases), "gh-cli");
+        let mut agents = HashMap::from([("agent".into(), crate::models::AgentConfig { enabled_skills: vec!["code".into(), "开发/code".into(), "missing".into()] })]);
+        let mut meta = HashMap::from([
+            ("code".into(), crate::models::SkillUserMeta { starred: true, tags: vec!["编码".into()] }),
+            ("开发/code".into(), crate::models::SkillUserMeta { starred: false, tags: vec!["开发".into()] }),
+        ]);
+        normalize_skill_references(&root_str, &mut agents, &mut meta);
+        assert_eq!(agents["agent"].enabled_skills, ["开发/code", "missing"]);
+        assert_eq!(meta.len(), 1);
+        assert!(meta["开发/code"].starred);
+        assert_eq!(meta["开发/code"].tags.len(), 2);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn category_names_reject_paths_and_windows_reserved_names() {
+        for invalid in ["../outside", "a/b", "a\\b", "_archive", ".git", "CON", "con.txt", "LPT1", "a:", "a.", "a "] {
+            assert!(validate_category(invalid).is_err(), "{invalid}");
+        }
+        for valid in ["", "01-开发工程", "音视频与交互"] { assert!(validate_category(valid).is_ok()); }
     }
 
     #[test]

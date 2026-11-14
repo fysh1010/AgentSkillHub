@@ -402,6 +402,16 @@ fn check_staged_credentials(root: &Path) -> Result<(), String> {
 }
 
 pub(super) fn local_files(path: &Path, root: &Path, paths: &mut Vec<String>) -> Result<(), String> {
+    if path != root {
+        let parent = path.parent().ok_or("同步路径无父目录")?;
+        let mut wrapper = root.to_path_buf();
+        for part in parent.strip_prefix(root).map_err(|_| "同步路径不在技能库内")?.components() {
+            wrapper.push(part);
+            if super::deploy::is_junction(&wrapper) {
+                return Err(format!("同步不跟随分类目录链接：{}", wrapper.display()));
+            }
+        }
+    }
     let metadata = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
     #[cfg(windows)]
     {
@@ -886,6 +896,7 @@ mod tests {
             fixture_identity(root);
         }
         fixture_skill(&a, "example");
+        fixture_skill(&a, "外层/再包一层/开发/deep-skill");
         fs::write(a.join("example/.env"), "TOKEN=fixture-only").unwrap();
         fs::write(a.join("example/cert.PFX"), b"fixture-cert").unwrap();
         fs::write(a.join("example/_icon.png"), b"fixture-icon").unwrap();
@@ -901,6 +912,7 @@ mod tests {
         fs::write(b.join("local-notes.txt"), "keep local").unwrap();
         sync_repository(&b, &remote, "main", "pull", false).unwrap();
         assert!(b.join("example/SKILL.md").is_file());
+        assert!(b.join("外层/再包一层/开发/deep-skill/SKILL.md").is_file());
         assert!(b.join("example/_icon.png").is_file());
         assert!(!b.join("example/.env").exists());
         assert!(!b.join("example/cert.PFX").exists());

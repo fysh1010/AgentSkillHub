@@ -16,6 +16,7 @@ import {
 import type { MarketSource, MarketSkill, MarketSkillDetail, SecurityReport } from "../types";
 import { useEsc } from "../composables/useEsc";
 import SkillIcon from "../components/SkillIcon.vue";
+import { categoryLabel, skillCategories } from "../utils/skillCategories";
 
 // Esc 关闭「安装后启用」弹窗（部署进行中不响应，避免误关）
 useEsc(() => {
@@ -31,6 +32,8 @@ const skills = ref<MarketSkill[]>([]);
 const loading = ref(false);
 const error = ref("");
 const installing = ref("");
+const installCategory = ref("");
+const installCategories = computed(() => skillCategories(store.skills));
 const showAddSource = ref(false);
 const newSource = ref({ name: "", repo: "", subpath: "" });
 const selected = ref<MarketSkill | null>(null);
@@ -302,7 +305,7 @@ async function install(s: MarketSkill) {
   if (installing.value) return;
   installing.value = s.name;
   try {
-    await marketInstall(activeSource.value, s.reference, s.owner, officialImg(s));
+    const key = await marketInstall(activeSource.value, s.reference, s.owner, officialImg(s), false, installCategory.value);
     toast(
         s.name === s.display_name
           ? `「${s.display_name}」已安装到技能库`
@@ -313,10 +316,11 @@ async function install(s: MarketSkill) {
     s.installed = true;
     // 安装成功后引导启用到 Agent
     pendingSkill.value = s;
+    pendingKey.value = key;
     enableAgents.value = [];
     showEnable.value = true;
     // 安装到本地后可扫描内容安全
-    scanSkillSecurity(s.name).then((r) => {
+    scanSkillSecurity(key).then((r) => {
       secReport.value = r;
     }).catch(() => {});
   } catch (e) {
@@ -330,6 +334,7 @@ async function install(s: MarketSkill) {
 
 const showEnable = ref(false);
 const pendingSkill = ref<MarketSkill | null>(null);
+const pendingKey = ref("");
 const enableAgents = ref<string[]>([]);
 const enabling = ref(false);
 const secReport = ref<SecurityReport | null>(null);
@@ -342,7 +347,7 @@ function toggleEnableAgent(id: string) {
 
 async function confirmEnable() {
   if (!pendingSkill.value || enabling.value) return;
-  const slug = pendingSkill.value.name;
+  const slug = pendingKey.value;
   enabling.value = true;
   try {
     for (const id of enableAgents.value) {
@@ -458,7 +463,7 @@ const updating = ref("");
 
 async function doUpdate(s: MarketSkill) {
   if (updating.value) return;
-  if (!confirm(`更新「${s.display_name}」到 ${s.version}？\n当前版本会先移入应用内回收站，更新失败可还原。`)) return;
+  if (!confirm(`更新「${s.display_name}」到 ${s.version}？\n下载完成后替换当前版本，保留原分类，旧版本保存在回收站。`)) return;
   updating.value = s.name;
   try {
     await marketInstall(activeSource.value, s.reference, s.owner, officialImg(s), true);
@@ -473,7 +478,7 @@ async function doUpdate(s: MarketSkill) {
 
 /** 待启用技能的风险提示 */
 const enableRisk = computed(() => {
-  const slug = pendingSkill.value?.name;
+  const slug = pendingKey.value;
   if (!slug) return "";
   const s = store.skills.find((x) => x.key === slug);
   if (s?.has_scripts) return "该技能包含 scripts/ 可执行脚本，建议先在技能库「查看全文」确认内容再启用";
@@ -559,6 +564,15 @@ onMounted(loadSources);
       <button class="btn primary" @click="browse()" :disabled="loading">
         {{ loading ? "加载中…" : "搜索" }}
       </button>
+    </div>
+
+    <div class="install-target">
+      <label for="install-category">新技能保存到</label>
+      <select id="install-category" v-model="installCategory" class="input" :disabled="!!installing">
+        <option value="">未分类（根目录）</option>
+        <option v-for="category in installCategories" :key="category" :value="category">{{ categoryLabel(category) }}</option>
+      </select>
+      <span>更新已有技能时保留原分类</span>
     </div>
 
     <!-- 分类筛选（基于当前结果集动态生成） -->
@@ -811,6 +825,9 @@ onMounted(loadSources);
 </template>
 
 <style scoped>
+.install-target { display:flex; align-items:center; flex-wrap:wrap; gap:10px; margin:0 0 18px; font-size:12px; color:var(--muted); }
+.install-target .input { width:190px; padding:7px 10px; font-size:12px; }
+.install-target > span { color:var(--faint); font-size:11px; }
 .add-source {
   display: grid;
   grid-template-columns: 1fr 1.4fr 1fr auto;

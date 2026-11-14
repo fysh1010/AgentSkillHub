@@ -22,7 +22,7 @@ pub struct Preview {
 }
 
 // 包含所有文件内容；不跟随目录内链接，避免把库外来源或循环混入备份。
-fn fingerprint(path: &Path) -> Result<String, String> {
+pub(super) fn fingerprint(path: &Path) -> Result<String, String> {
     fn visit(
         root: &Path,
         path: &Path,

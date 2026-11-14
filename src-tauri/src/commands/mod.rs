@@ -134,6 +134,7 @@ pub fn load_config(app: &AppHandle) -> AppConfig {
     for a in &cfg.agents {
         cfg.agent_configs.entry(a.id.clone()).or_default();
     }
+    scan::normalize_skill_references(&cfg.skills_root, &mut cfg.agent_configs, &mut cfg.skill_meta);
     cfg
 }
 
@@ -251,7 +252,13 @@ pub async fn workspace_stamp(state: State<'_, AppState>) -> Result<String, Strin
             // 技能本身可能是另一个工具创建的链接，观察其内容而非只观察链接元数据。
             if path.is_dir() {
                 let mut skills = Vec::new();
-                scan::visit_skills(&path.to_string_lossy(), |p,_,_,_| skills.push(p));
+                let mut folders = Vec::new();
+                scan::visit_skills_with_dirs(&path.to_string_lossy(), |p,_,_,_| skills.push(p), |p| folders.push(p.to_path_buf()));
+                folders.sort();
+                for folder in folders {
+                    folder.hash(&mut hash);
+                    std::fs::metadata(&folder).ok().and_then(|m| m.modified().ok()).hash(&mut hash);
+                }
                 skills.sort();
                 for skill in skills { skill.hash(&mut hash); scan::dir_fingerprint(&skill).hash(&mut hash); }
             }
@@ -752,7 +759,7 @@ pub async fn market_skill_detail(slug: String) -> Result<crate::models::MarketSk
         .map_err(|e| e.to_string())?
 }
 
-/// 从市场安装技能到技能库根目录（async：下载+解压较慢，避免卡住窗口）
+/// 从市场安装技能到指定分类，更新保留技能原位置。
 #[tauri::command]
 pub async fn market_install(
     state: State<'_, AppState>,
@@ -761,7 +768,9 @@ pub async fn market_install(
     owner: String,
     icon_url: String,
     force: bool,
+    category: Option<String>,
 ) -> Result<String, String> {
+    let app = state.handle.clone();
     let task = {
         let cfg = state.config.lock().unwrap();
         let skills_root = cfg.skills_root.clone();
@@ -771,43 +780,18 @@ pub async fn market_install(
         let kind = src.kind.clone();
         let repo = src.repo.clone();
         move || -> Result<String, String> {
-            match kind.as_str() {
-                "clawhub" => {
-                    // reference 为 "owner/slug" 或纯 slug
-                    let (o, slug) = match reference.split_once('/') {
-                        Some((a, b)) => (a.to_string(), b.to_string()),
-                        None => (String::new(), reference.clone()),
-                    };
-                    let o = if owner.is_empty() { o } else { owner };
-                    // force = 更新：旧版本先移入应用回收站，失败可还原
-                    if force {
-                        delete::force_clear_for_update(&skills_root, &slug)?;
-                    }
-                    market::clawhub_install(&slug, &o, &skills_root, &icon_url)
+            let _io = SKILL_IO.lock().unwrap();
+            market::install_in_library(&skills_root, &kind, &repo, &reference, &owner, &icon_url, force, category.as_deref().unwrap_or(""), || {
+                if app.state::<AppState>().config.lock().unwrap().skills_root != skills_root {
+                    return Err("下载期间技能库路径已切换，未写入旧技能库，请刷新后重试".into());
                 }
-                "github" => {
-                    if force {
-                        let slug = reference.rsplit('/').next().unwrap_or("");
-                        delete::force_clear_for_update(&skills_root, slug)?;
-                    }
-                    market::github_install(&repo, &reference, &skills_root)
-                }
-                "skillhub" => {
-                    if force {
-                        delete::force_clear_for_update(&skills_root, &reference)?;
-                    }
-                    market::skillhub_install(&reference, &owner, &skills_root, &icon_url)
-                }
-                _ => Err(format!("未知源类型: {kind}")),
-            }
+                Ok(())
+            })
         }
     };
     let r = tauri::async_runtime::spawn_blocking(task)
         .await
         .map_err(|e| format!("安装任务异常: {e}"))?;
-    if r.is_ok() {
-        save_config(&state)?;
-    }
     r
 }
 

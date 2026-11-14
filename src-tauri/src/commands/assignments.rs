@@ -278,6 +278,24 @@ mod tests {
     }
     #[cfg(windows)]
     #[test]
+    fn deeply_wrapped_skill_can_be_assigned_and_undone() {
+        let (tmp, cfg, mut change) = fixture("assign_deep");
+        let key = "外层/内层/开发/demo";
+        let target = tmp.join("library").join(key);
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::rename(tmp.join("library/demo"), &target).unwrap();
+        change.skill_key = key.into();
+        assert_eq!(preview(&cfg, &[change.clone()]).unwrap().len(), 1);
+        let actions = apply(&cfg, &[change]).unwrap();
+        assert!(tmp.join("agent/demo/SKILL.md").is_file());
+        assert_eq!(deploy::assigned_skills(&cfg.agents[0], &cfg.skills_root), [key]);
+        undo(&actions).unwrap();
+        assert!(target.join("SKILL.md").is_file());
+        fs::remove_dir_all(tmp).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn instant_toggle_is_scoped_and_can_be_undone() {
         let (tmp, mut cfg, change) = fixture("assign_instant");
         cfg.agent_configs

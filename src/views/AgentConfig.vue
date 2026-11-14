@@ -16,7 +16,8 @@ import {
 } from "../store";
 import { computeDiff, importExistingLinks } from "../api/tauri";
 import { useEsc } from "../composables/useEsc";
-import type { DiffItem } from "../types";
+import type { DiffItem, SkillInfo } from "../types";
+import { categoryLabel } from "../utils/skillCategories";
 import AgentIcon from "../components/AgentIcon.vue";
 import { assignmentChanges, previewAssignments } from "../composables/useSkillAssignments";
 import { previewSkillLink } from '../composables/useSkillLinks';
@@ -27,6 +28,7 @@ useEsc(() => {
   if (showPreview.value) showPreview.value = false;
 });
 
+const props = defineProps<{ skills?: SkillInfo[] }>();
 const selectedId = ref("");
 const diff = ref<DiffItem[]>([]);
 const diffLoading = ref(false);
@@ -45,7 +47,7 @@ const skillKw = ref("");
 const grouped = computed(() => {
   const kw = skillKw.value.trim().toLowerCase();
   const map = new Map<string, typeof store.skills>();
-  store.skills.forEach((s) => {
+  (props.skills ?? store.skills).forEach((s) => {
     if (
       kw &&
       !s.name.toLowerCase().includes(kw) &&
@@ -268,6 +270,7 @@ function diffTone(kind: string): string {
 
       <!-- 技能搜索（技能多时快速定位） -->
       <input
+        v-if="!props.skills"
         v-model="skillKw"
         class="input skill-search"
         placeholder="搜索技能名称 / 描述 / 目录名…"
@@ -278,7 +281,7 @@ function diffTone(kind: string): string {
       <div class="skill-groups">
         <div v-for="[cat, list] in grouped" :key="cat" class="group">
           <div class="group-head">
-            <span>{{ cat === "(根)" ? "全部技能" : cat }}</span>
+            <span>{{ categoryLabel(cat) }}</span>
             <span class="group-count">{{ list.length }}</span>
           </div>
           <div class="group-list">

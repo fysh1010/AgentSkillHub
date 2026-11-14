@@ -6,15 +6,15 @@ import SkillIcon from "./SkillIcon.vue";
 import SkillAssignments from "./SkillAssignments.vue";
 import type { SkillInfo } from "../types";
 defineEmits<{ detail:[skill:SkillInfo] }>();
-const keyword = ref("");
+const props = defineProps<{ skills: SkillInfo[]; filterKey: string }>();
 const checked = ref<string[]>([]);
 const target = ref("all");
 const mode = ref<"all" | "none" | "invert">("all");
-const visible = computed(() => store.skills.filter(s => `${s.name} ${s.key} ${s.description}`.toLowerCase().includes(keyword.value.trim().toLowerCase())));
+const visible = computed(() => props.skills);
 const writable = computed(() => assignmentAgents.value.filter(a => a.writable));
 const visibleKeys = computed(() => visible.value.map(s => s.key));
 const selectedKeys = computed(() => visibleKeys.value.filter(key => checked.value.includes(key)));
-watch(() => store.skills.map(s => s.key), keys => { checked.value = checked.value.filter(key => keys.includes(key)); });
+watch([() => props.filterKey, () => visibleKeys.value.join("\0")], () => { checked.value = []; });
 function select(mode: "all" | "none" | "invert") {
   const selection = new Set(checked.value);
   for (const key of visibleKeys.value) {
@@ -32,7 +32,7 @@ function applySelection() {
 
 <template>
   <section class="allocation">
-    <header class="allocation-head"><div><h2>按技能分配</h2><p>图标亮起即已启用，点击即可切换。悬停查看 Agent 名称。</p></div><input v-model="keyword" class="input" placeholder="搜索技能名称 / 描述…" aria-label="搜索待分配技能" /></header>
+    <header class="allocation-head"><div><h2>按技能分配</h2><p>图标亮起即已启用，点击即可切换。悬停查看 Agent 名称。</p></div></header>
     <div class="selection-bar">
       <span class="selection-count">已选 <b>{{ selectedKeys.length }}</b><span> / {{ visible.length }}</span></span>
       <div class="selection-buttons"><button class="btn ghost" @click="select('all')">全选</button><button class="btn ghost" @click="select('none')">全不选</button><button class="btn ghost" @click="select('invert')">反选</button></div>
@@ -54,7 +54,6 @@ function applySelection() {
 .allocation-head { display:flex; align-items:center; justify-content:space-between; gap:24px; margin-bottom:20px; }
 h2 { font-size:20px; font-weight:650; letter-spacing:-.4px; }
 .allocation-head p, .allocation-note { color:var(--muted); font-size:12px; margin-top:5px; }
-.allocation-head .input { width:270px; }
 .selection-bar { display:flex; align-items:center; gap:12px; margin:16px 0 12px; flex-wrap:wrap; }
 .selection-count { font-size:12px; color:var(--muted); }
 .selection-count b { color:var(--text); margin-left:4px; }

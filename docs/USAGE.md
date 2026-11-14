@@ -36,6 +36,8 @@ Claude Code、Codex 等 AI 工具会读取各自 `skills` 目录下的这些文�
 
 ### 1.2 唯一技能库 + 逐技能 Junction
 
+技能库支持多层文件夹，例如 `E:\my-skills\外层\开发\前端\my-skill\SKILL.md`，没有固定的包装层数限制。分类侧栏会展示层级，选择父分类时包含其子分类；技能的唯一标识使用完整相对路径。找到 `SKILL.md` 后即认为已经到达技能边界，其内部示例不再作为独立技能扫描。隐藏、归档、`node_modules` 目录及目录链接循环保持排除。
+
 AgentSkillHub 的核心设计：
 
 - **技能库**（默认当前用户目录下的 `AgentSkillHub/skills`）是所有技能的唯一真实存放地；

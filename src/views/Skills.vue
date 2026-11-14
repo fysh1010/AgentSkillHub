@@ -34,6 +34,8 @@ import AgentOwnedSkills from "../components/AgentOwnedSkills.vue";
 import ResourceTabs from "../components/ResourceTabs.vue";
 import SkillAllocation from "../components/SkillAllocation.vue";
 import AgentConfig from "./AgentConfig.vue";
+import SkillCategories from "../components/SkillCategories.vue";
+import { categoryLabel, inSkillCategory, ROOT_CATEGORY, skillCategories } from "../utils/skillCategories";
 const resourceTab = ref("library");
 
 // Esc 按弹窗层级关闭：全文预览 > 删除确认 > 技能详情
@@ -44,7 +46,16 @@ useEsc(() => {
 });
 
 const keyword = ref("");
-const activeCat = ref("全部");
+const activeCat = ref("");
+const activeTag = ref("");
+try { activeCat.value = localStorage.getItem("ash.skillCategory") || ""; } catch { /* 存储不可用时使用全部技能。 */ }
+watch(activeCat, category => {
+  try { localStorage.setItem("ash.skillCategory", category); } catch { /* 不影响本次筛选。 */ }
+});
+watch(() => [store.config?.skills_root, store.skills] as const, () => {
+  if (store.loading) return;
+  if (activeCat.value && activeCat.value !== ROOT_CATEGORY && !skillCategories(store.skills).includes(activeCat.value)) activeCat.value = "";
+});
 const selected = ref<SkillInfo | null>(null);
 watch(() => store.skills, skills => {
   if (selected.value) selected.value = skills.find(s => s.key === selected.value!.key) || null;
@@ -77,25 +88,16 @@ async function doDelete() {
   }
 }
 
-const categories = computed(() => {
-  const set = new Set<string>();
-  store.skills.forEach((s) => set.add(s.category));
-  const cats = Array.from(set);
-  // 点开头与下划线开头的分类排后
-  cats.sort((a, b) => {
-    const ap = a.startsWith(".") || a.startsWith("_") ? 1 : 0;
-    const bp = b.startsWith(".") || b.startsWith("_") ? 1 : 0;
-    if (ap !== bp) return ap - bp;
-    return a.localeCompare(b, "zh");
-  });
-  return ["全部", ...cats];
-});
+const tags = computed(() => [...new Set(store.skills.flatMap(s => skillMeta(s.key).tags))].sort((a, b) => a.localeCompare(b, "zh")));
+watch(tags, available => { if (activeTag.value && !available.includes(activeTag.value)) activeTag.value = ""; });
+const filterKey = computed(() => JSON.stringify([activeCat.value, keyword.value, activeTag.value, showStarred.value]));
 
 const filtered = computed(() => {
   const kw = keyword.value.trim().toLowerCase();
   return store.skills.filter((s) => {
     if (showStarred.value && !isStarred(s.key)) return false;
-    if (activeCat.value !== "全部" && s.category !== activeCat.value) return false;
+    if (!inSkillCategory(s.category, activeCat.value)) return false;
+    if (activeTag.value && !skillMeta(s.key).tags.includes(activeTag.value)) return false;
     if (!kw) return true;
     return (
       s.name.toLowerCase().includes(kw) ||
@@ -104,11 +106,6 @@ const filtered = computed(() => {
     );
   });
 });
-
-function catCount(cat: string) {
-  if (cat === "全部") return store.skills.length;
-  return store.skills.filter((s) => s.category === cat).length;
-}
 
 // ---------- 英文描述翻译 ----------
 
@@ -256,28 +253,22 @@ onMounted(() => {
         <h1>技能库</h1>
         <p class="sub">来源：{{ store.config?.skills_root }}</p>
       </div>
-      <input v-if="resourceTab === 'library' && ui.skillsView === 'cards'" v-model="keyword" class="input search" placeholder="搜索技能名称 / 描述 / 分类…" />
     </header>
     <ResourceTabs v-model="resourceTab" label="技能库来源视图" :items="[{id:'library',name:'技能库',count:store.skills.length},{id:'owned',name:'Agent 自有技能',count:store.ownedSkills.length}]" />
     <template v-if="resourceTab === 'library'">
     <div class="library-toolbar"><div class="library-view-switch" role="group" aria-label="技能库视图"><button :class="{active:ui.skillsView === 'list'}" @click="ui.skillsView = 'list'">列表</button><button :class="{active:ui.skillsView === 'cards'}" @click="ui.skillsView = 'cards'">卡片</button><button :class="{active:ui.skillsView === 'agents'}" @click="ui.skillsView = 'agents'">按 Agent</button></div><button class="btn" @click="openAgentSettings()">管理 Agent</button></div>
-    <SkillAllocation v-if="ui.skillsView === 'list'" @detail="openDetail" />
-    <AgentConfig v-else-if="ui.skillsView === 'agents'" />
-    <template v-else>
-    <div class="cats" v-if="categories.length > 2">
-      <button class="cat" :class="{ active: showStarred }" @click="showStarred = !showStarred">
-        ★ 收藏 <span class="cat-count">{{ store.skills.filter((s) => isStarred(s.key)).length }}</span>
-      </button>
-      <button
-        v-for="c in categories"
-        :key="c"
-        class="cat"
-        :class="{ active: activeCat === c }"
-        @click="activeCat = c"
-      >
-        {{ c === "(根)" ? "全部技能" : c }} <span class="cat-count">{{ catCount(c) }}</span>
-      </button>
+    <div class="library-layout">
+    <SkillCategories v-model="activeCat" :skills="store.skills" />
+    <section class="library-content" aria-label="分类技能列表">
+    <div class="library-filters">
+      <input v-model="keyword" class="input library-search" aria-label="搜索技能" placeholder="搜索名称 / 描述 / 文件夹…" />
+      <select v-model="activeTag" class="input tag-filter" aria-label="筛选技能标签"><option value="">全部标签</option><option v-for="tag in tags" :key="tag" :value="tag">{{ tag }}</option></select>
+      <button class="btn" :class="{ 'starred-only': showStarred }" :aria-pressed="showStarred" @click="showStarred = !showStarred">★ 仅收藏</button>
     </div>
+    <div class="library-result"><span>{{ activeCat ? categoryLabel(activeCat) : '全部技能' }}</span><small>{{ filtered.length }} 个技能</small></div>
+    <SkillAllocation v-if="ui.skillsView === 'list'" :skills="filtered" :filter-key="filterKey" @detail="openDetail" />
+    <AgentConfig v-else-if="ui.skillsView === 'agents'" :skills="filtered" />
+    <template v-else>
 
     <div class="grid">
       <div
@@ -310,7 +301,7 @@ onMounted(() => {
           >译</button>
         </div>
         <div class="skill-meta">
-          <span class="badge gray">{{ s.category }}</span>
+          <span class="badge gray">{{ categoryLabel(s.category) }}</span>
           <span class="meta-text">{{ formatBytes(s.size_bytes) }}</span>
           <span class="meta-text" v-if="s.has_scripts">scripts/</span>
           <span
@@ -344,6 +335,8 @@ onMounted(() => {
     </div>
 
     </template>
+    </section>
+    </div>
     </template>
     <AgentOwnedSkills v-else />
 
@@ -511,6 +504,16 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.library-layout { display:grid; grid-template-columns:180px minmax(0,1fr); align-items:start; gap:22px; }
+.library-content { min-width:0; }
+.library-filters { display:flex; align-items:center; gap:9px; flex-wrap:wrap; margin-bottom:14px; }
+.library-search { flex:1; min-width:180px; }
+.tag-filter { width:140px; }
+.starred-only { color:var(--amber); background:var(--amber-soft); border-color:var(--amber); }
+.library-result { display:flex; align-items:baseline; gap:10px; margin-bottom:22px; }
+.library-result > span { font-size:15px; font-weight:600; }
+.library-result small { color:var(--faint); font-size:11px; }
+@media (max-width:1000px) { .library-layout { grid-template-columns:minmax(0,1fr); gap:18px; } }
 .library-toolbar { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:20px; }
 .library-view-switch { display:flex; padding:3px; gap:3px; background:var(--panel-2); border:1px solid var(--border-soft); border-radius:8px; }
 .library-view-switch button { padding:6px 16px; border:1px solid transparent; border-radius:5px; color:var(--muted); background:none; font:inherit; cursor:pointer; font-size:12px; }
@@ -531,16 +534,6 @@ h1 {
   font-size: 12.5px;
   margin-top: 2px;
 }
-.search {
-  width: 280px;
-  flex-shrink: 1;
-  min-width: 140px;
-}
-
-.cats {
-  margin-bottom: 16px;
-}
-
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
